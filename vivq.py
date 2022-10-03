@@ -8,8 +8,8 @@ class TemporalSpatialAttention(nn.Module):
         self.channels = channels
         self.size = size
         self.frames = frames
-        self.temporal_attention = nn.MultiheadAttention(channels*size*size, 4, batch_first=True)
-        self.spatial_attention = nn.MultiheadAttention(channels*frames, 4, batch_first=True)
+        self.spatial_attention = nn.MultiheadAttention(channels*size*size, 4, batch_first=True)
+        self.temporal_attention = nn.MultiheadAttention(channels*frames, 4, batch_first=True)
         self.ln_t = nn.LayerNorm([channels*size*size])
         self.ln_s = nn.LayerNorm([channels*frames])
         self.ff_self = nn.Sequential(
@@ -23,12 +23,12 @@ class TemporalSpatialAttention(nn.Module):
         bs, tz, _, _, _ = x.shape
         x = x.view(bs, tz, self.channels * self.size * self.size)  # bs x tz x cz * hz * wz
         x_ln = self.ln_t(x)
-        attention_value, _ = self.temporal_attention(x_ln, x_ln, x_ln)
+        attention_value, _ = self.spatial_attention(x_ln, x_ln, x_ln)
         x = attention_value + x
         # x = x.view(bs, tz, self.channels, self.size, self.size)
         x = x.view(bs, tz*self.channels, self.size*self.size).permute(0, 2, 1)  # bs x hz * wz x tz * cz
         x = self.ln_s(x)
-        attention_value, _ = self.spatial_attention(x, x, x)
+        attention_value, _ = self.temporal_attention(x, x, x)
         attention_value = attention_value + x
         attention_value = self.ff_self(attention_value) + attention_value
         return attention_value.permute(0, 2, 1).view(bs, tz, self.channels, self.size, self.size)
