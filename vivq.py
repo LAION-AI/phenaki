@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torchtools.nn import VectorQuantize
 from fast_pytorch_kmeans import KMeans
+import numpy as np
 
 
 class TemporalSpatialAttention(nn.Module):
@@ -28,7 +29,7 @@ class TemporalSpatialAttention(nn.Module):
         mask = torch.triu(torch.ones(base_shape[1], base_shape[1]) * float('-inf'), diagonal=1)
         x = x.permute(0, 2, 1, 3).view(-1, x.size(1), x.size(-1)) # B x T x (H x W) x C -> (B x H x W) x T x C
         x = self.temporal_transformer(x, mask=mask)
-        x = x.view(base_shape[0], -1, *x.shape[2:]).permute(0, 2, 1, 3) # (B x H x W) x T x C -> B x T x (H x W) x C
+        x = x.view(base_shape[0], -1, *x.shape[1:]).permute(0, 2, 1, 3) # (B x H x W) x T x C -> B x T x (H x W) x C
         return x
     
     def forward(self, x): 
@@ -45,7 +46,7 @@ class TemporalSpatialAttention(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=5, num_layers=4, num_heads=4):
+    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=29, num_layers=4, num_heads=4):
         super(Encoder, self).__init__()
         self.patch_emb = nn.Conv3d(input_channels, hidden_channels, kernel_size=patch_size, stride=patch_size)
         self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames, num_layers=num_layers, num_heads=num_heads)
@@ -59,15 +60,15 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=5, num_layers=4, num_heads=4):
+    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=20, num_layers=4, num_heads=4):
         super(Decoder, self).__init__()
         self.size = size
         self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames, num_layers=num_layers, num_heads=num_heads, spatial_first=False)
-        self.unpatch_emb = nn.ConvTranspose3D(hidden_channels, input_channels, kernel_size=patch_size, stride=patch_size)
+        self.unpatch_emb = nn.ConvTranspose3d(hidden_channels, input_channels, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
         x = self.attention(x)
-        x = x.permute(0, 3, 1, 2).view(x.size(0), x.size(3), x.size(1), sqrt(self.size(2)), sqrt(self.size(2))) # B x T x (H x W) x C -> B x C x T x H x W
+        x = x.permute(0, 3, 1, 2).view(x.size(0), x.size(3), x.size(1), self.size, self.size) # B x T x (H x W) x C -> B x C x T x H x W
         x = self.unpatch_emb(x)
         x = x.permute(0, 2, 1, 3, 4) # B x C x T x H x W -> B x T x C x H x W
         return x
@@ -109,14 +110,12 @@ class VQModule(nn.Module):
 
 
 class VQModel(nn.Module):
-    def __init__(self, batch_size=1, compressed_frames=5, latent_size=32, c_hidden=64, c_codebook=16, codebook_size=1024,
+    def __init__(self, batch_size=1, compressed_frames=20, latent_size=32, c_hidden=64, c_codebook=16, codebook_size=1024,
                  num_layers_enc=4, num_layers_dec=4, num_heads=4):
         super().__init__()
         self.encoder = Encoder(hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames, num_layers=num_layers_enc, num_heads=num_heads)
-        self.cod_mapper = nn.Sequential(
-            nn.Linear(c_hidden, c_codebook),
-            nn.BatchNorm2d(c_codebook), # This should work because input has 4 dims, but not sure if it's properly used :/ 
-        )
+        self.cod_mapper = nn.Linear(c_hidden, c_codebook)
+        self.batchnorm = nn.BatchNorm2d(c_codebook)
         
         self.cod_unmapper = nn.Linear(c_codebook, c_hidden)
         self.decoder = Decoder(hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames, num_layers=num_layers_dec, num_heads=num_heads)
@@ -131,6 +130,7 @@ class VQModel(nn.Module):
     def encode(self, x):
         x = self.encoder(x) # B x T x (H x W) x C
         x = self.cod_mapper(x)
+        x = self.batchnorm(x.permute(0, 3, 1, 2)).permute(0, 2, 3 ,1)
         qe, commit_loss, indices = self.vqmodule(x, dim=-1)
         return (x, qe), commit_loss, indices
 
@@ -143,10 +143,8 @@ class VQModel(nn.Module):
         return self.decode(self.vqmodule.vquantizer.idx2vq(x, dim=-1))
 
     def forward(self, x):
-        print(x.shape)
         (_, qe), commit_loss, _ = self.encode(x)
         decoded = self.decode(qe)
-        print(decoded.shape)
         return decoded, commit_loss
 
 
