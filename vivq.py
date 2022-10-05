@@ -46,7 +46,7 @@ class TemporalSpatialAttention(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=29, num_layers=4, num_heads=4):
+    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=20, num_layers=4, num_heads=4):
         super(Encoder, self).__init__()
         self.patch_emb = nn.Conv3d(input_channels, hidden_channels, kernel_size=patch_size, stride=patch_size)
         self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames, num_layers=num_layers, num_heads=num_heads)
