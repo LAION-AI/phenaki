@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from torchtools.nn import VectorQuantize
 from fast_pytorch_kmeans import KMeans
-import numpy as np
 
 
 class TemporalSpatialAttention(nn.Module):
@@ -10,30 +9,34 @@ class TemporalSpatialAttention(nn.Module):
         super(TemporalSpatialAttention, self).__init__()
         self.spatial_first = spatial_first
         self.pos_encodings = pos_encodings
-        
-        self.transformer_layer = nn.TransformerEncoderLayer(d_model=channels, dim_feedforward=channels*4, nhead=num_heads, batch_first=True, norm_first=True, activation='gelu')
-        self.spatial_transformer = nn.TransformerEncoder(encoder_layer=self.transformer_layer, num_layers=num_layers, norm=nn.LayerNorm(channels))
-        self.temporal_transformer = nn.TransformerEncoder(encoder_layer=self.transformer_layer, num_layers=num_layers, norm=nn.LayerNorm(channels))
-        
+
+        self.transformer_layer = nn.TransformerEncoderLayer(d_model=channels, dim_feedforward=channels * 4,
+                                                            nhead=num_heads, batch_first=True, norm_first=True,
+                                                            activation='gelu')
+        self.spatial_transformer = nn.TransformerEncoder(encoder_layer=self.transformer_layer, num_layers=num_layers,
+                                                         norm=nn.LayerNorm(channels))
+        self.temporal_transformer = nn.TransformerEncoder(encoder_layer=self.transformer_layer, num_layers=num_layers,
+                                                          norm=nn.LayerNorm(channels))
+
         if pos_encodings:
-            self.spatial_positional_encoding = nn.Parameter(torch.randn(1, 1, size*size, channels) / channels ** 0.5)
+            self.spatial_positional_encoding = nn.Parameter(torch.randn(1, 1, size * size, channels) / channels ** 0.5)
             self.temporal_positional_encoding = nn.Parameter(torch.randn(1, frames, 1, channels) / channels ** 0.5)
-    
+
     def _spatial_attn(self, x, base_shape):
-        x = x.view(-1, *x.shape[2:]) # B x T x (H x W) x C -> (B x T) x (H x W) x C
+        x = x.view(-1, *x.shape[2:])  # B x T x (H x W) x C -> (B x T) x (H x W) x C
         x = self.spatial_transformer(x)
-        x = x.view(base_shape[0], base_shape[1], *x.shape[1:]) # (B x T) x (H x W) x C -> B x T x (H x W) x C
+        x = x.view(base_shape[0], base_shape[1], *x.shape[1:])  # (B x T) x (H x W) x C -> B x T x (H x W) x C
         return x
-    
+
     def _temporal_attn(self, x, base_shape):
         mask = torch.triu(torch.ones(base_shape[1], base_shape[1]) * float('-inf'), diagonal=1)
-        x = x.permute(0, 2, 1, 3).view(-1, x.size(1), x.size(-1)) # B x T x (H x W) x C -> (B x H x W) x T x C
+        x = x.permute(0, 2, 1, 3).view(-1, x.size(1), x.size(-1))  # B x T x (H x W) x C -> (B x H x W) x T x C
         x = self.temporal_transformer(x, mask=mask)
-        x = x.view(base_shape[0], -1, *x.shape[1:]).permute(0, 2, 1, 3) # (B x H x W) x T x C -> B x T x (H x W) x C
+        x = x.view(base_shape[0], -1, *x.shape[1:]).permute(0, 2, 1, 3)  # (B x H x W) x T x C -> B x T x (H x W) x C
         return x
-    
-    def forward(self, x): 
-        base_shape = x.shape # x -> B x T x (H x W) x C
+
+    def forward(self, x):
+        base_shape = x.shape  # x -> B x T x (H x W) x C
         if self.pos_encodings:
             x = x + self.spatial_positional_encoding + self.temporal_positional_encoding
         if self.spatial_first:
@@ -46,31 +49,41 @@ class TemporalSpatialAttention(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=20, num_layers=4, num_heads=4):
+    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=20,
+                 num_layers=4, num_heads=4):
         super(Encoder, self).__init__()
-        self.patch_emb = nn.Conv3d(input_channels, hidden_channels, kernel_size=patch_size, stride=patch_size)
-        self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames, num_layers=num_layers, num_heads=num_heads)
+        self.video_patch_emb = nn.Conv3d(input_channels, hidden_channels, kernel_size=patch_size, stride=patch_size)
+        self.image_patch_emb = nn.Conv2d(input_channels, hidden_channels, kernel_size=patch_size[1:], stride=patch_size[1:])
+        self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames, num_layers=num_layers,
+                                                  num_heads=num_heads)
 
     def forward(self, x):
-        x = x.permute(0, 2, 1, 3, 4) # B x T x C x H x W -> B x C x T x H x W
-        x = self.patch_emb(x)
-        x = x.view(*x.shape[:3], -1).permute(0, 2, 3, 1) # -> B x T x (H x W) x C [I'll use this as a reference shape, so every function returns this shape]
-        x = self.attention(x)
-        return x
+        image, video = x[:, 0], x[:, 1:]
+        video = video.permute(0, 2, 1, 3, 4)  # B x T x C x H x W -> B x C x T x H x W
+        image = self.image_patch_emb(image)
+        video = self.video_patch_emb(video)
+        video = torch.cat([image.unsqueeze(2), video], dim=2)
+        video = video.view(*video.shape[:3], -1).permute(0, 2, 3, 1)  # -> B x T x (H x W) x C [I'll use this as a reference shape, so every function returns this shape]
+        video = self.attention(video)
+        return video
 
 
 class Decoder(nn.Module):
-    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=20, num_layers=4, num_heads=4):
+    def __init__(self, patch_size=(5, 8, 8), input_channels=3, hidden_channels=64, size=32, compressed_frames=20,
+                 num_layers=4, num_heads=4):
         super(Decoder, self).__init__()
         self.size = size
-        self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames, num_layers=num_layers, num_heads=num_heads, spatial_first=False)
-        self.unpatch_emb = nn.ConvTranspose3d(hidden_channels, input_channels, kernel_size=patch_size, stride=patch_size)
+        self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames, num_layers=num_layers,
+                                                  num_heads=num_heads, spatial_first=False)
+        self.unpatch_emb = nn.ConvTranspose3d(hidden_channels, input_channels, kernel_size=patch_size,
+                                              stride=patch_size)
 
     def forward(self, x):
         x = self.attention(x)
-        x = x.permute(0, 3, 1, 2).view(x.size(0), x.size(3), x.size(1), self.size, self.size) # B x T x (H x W) x C -> B x C x T x H x W
+        x = x.permute(0, 3, 1, 2).view(x.size(0), x.size(3), x.size(1), self.size,
+                                       self.size)  # B x T x (H x W) x C -> B x C x T x H x W
         x = self.unpatch_emb(x)
-        x = x.permute(0, 2, 1, 3, 4) # B x C x T x H x W -> B x T x C x H x W
+        x = x.permute(0, 2, 1, 3, 4)  # B x C x T x H x W -> B x T x C x H x W
         return x
 
 
@@ -110,15 +123,18 @@ class VQModule(nn.Module):
 
 
 class VQModel(nn.Module):
-    def __init__(self, batch_size=1, compressed_frames=20, latent_size=32, c_hidden=64, c_codebook=16, codebook_size=1024,
+    def __init__(self, batch_size=1, compressed_frames=20, latent_size=32, c_hidden=64, c_codebook=16,
+                 codebook_size=1024,
                  num_layers_enc=4, num_layers_dec=4, num_heads=4):
         super().__init__()
-        self.encoder = Encoder(hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames, num_layers=num_layers_enc, num_heads=num_heads)
+        self.encoder = Encoder(hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames,
+                               num_layers=num_layers_enc, num_heads=num_heads)
         self.cod_mapper = nn.Linear(c_hidden, c_codebook)
         self.batchnorm = nn.BatchNorm2d(c_codebook)
-        
+
         self.cod_unmapper = nn.Linear(c_codebook, c_hidden)
-        self.decoder = Decoder(hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames, num_layers=num_layers_dec, num_heads=num_heads)
+        self.decoder = Decoder(hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames,
+                               num_layers=num_layers_dec, num_heads=num_heads)
 
         self.codebook_size = codebook_size
         self.vqmodule = VQModule(
@@ -128,9 +144,9 @@ class VQModel(nn.Module):
         )
 
     def encode(self, x):
-        x = self.encoder(x) # B x T x (H x W) x C
+        x = self.encoder(x)  # B x T x (H x W) x C
         x = self.cod_mapper(x)
-        x = self.batchnorm(x.permute(0, 3, 1, 2)).permute(0, 2, 3 ,1)
+        x = self.batchnorm(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         qe, commit_loss, indices = self.vqmodule(x, dim=-1)
         return (x, qe), commit_loss, indices
 
@@ -149,8 +165,8 @@ class VQModel(nn.Module):
 
 
 if __name__ == '__main__':
-    e = Encoder(size=16)
-    vq = VQModel(latent_size=16)
-    print(sum([p.numel() for p in e.parameters()]))
-    x = torch.randn(1, 100, 3, 128, 128)
+    device = "cpu"
+    vq = VQModel(latent_size=16).to(device)
+    print(sum([p.numel() for p in vq.parameters()]))
+    x = torch.randn(1, 100, 3, 128, 128).to(device)
     vq(x)
