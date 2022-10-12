@@ -9,6 +9,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
+from loss.loss import FirstStageLoss
 
 
 def train(proc_id, args):
@@ -45,10 +46,11 @@ def train(proc_id, args):
     if not proc_id and args.node_id == 0:
         print(f"Number of Parameters: {sum([p.numel() for p in model.parameters()])}")
 
+    criterion = FirstStageLoss()
     lr = 3e-4
     dataset = get_dataloader(args)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    optimizer_discriminator = optim.AdamW(criterion.discriminator.parameters(), lr=lr*1e-2)
     logger = SummaryWriter(os.path.join("runs", args.run_name))
 
     if not proc_id and args.node_id == 0:
@@ -97,12 +99,13 @@ def train(proc_id, args):
         videos = videos.to(device)
 
         recon = model(videos)
-        loss = criterion(videos, recon)
+        loss, d_loss = criterion(videos, recon)
         loss_adjusted = loss / grad_accum_steps
 
         loss_adjusted.backward()
         if (step + 1) % grad_accum_steps == 0:
             optimizer.step()
+            optimizer_discriminator.step()
             scheduler.step()
             optimizer.zero_grad()
 
