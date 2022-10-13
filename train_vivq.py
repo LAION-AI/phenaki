@@ -4,12 +4,11 @@ import torch
 import wandb
 from torch import nn, optim
 from tqdm import tqdm
-import numpy as np
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.tensorboard import SummaryWriter
 from loss.loss import FirstStageLoss
+from vivq import VIVIT
 
 
 def train(proc_id, args):
@@ -18,10 +17,10 @@ def train(proc_id, args):
     else:
         resume = False
     if not proc_id and args.node_id == 0:
-        if resume:
-            wandb.init(project="Phenaki", name=args.run_name, entity="wand-tech", config=vars(args))
-        else:
-            wandb.init(project="Phenaki", name=args.run_name, entity="wand-tech", config=vars(args))
+        # if resume:
+        #     wandb.init(project="Phenaki", name=args.run_name, entity="wand-tech", config=vars(args))
+        # else:
+        #     wandb.init(project="Phenaki", name=args.run_name, entity="wand-tech", config=vars(args))
         print(f"Starting run '{args.run_name}'....")
         print(f"Batch Size check: {args.n_nodes * args.batch_size * args.accum_grad * len(args.devices)}")
     parallel = len(args.devices) > 1
@@ -37,7 +36,7 @@ def train(proc_id, args):
 
     if args.model == "vivit":
         print(f"Model: DenoiseGIC")
-        model = None.to(device)
+        model = VIVIT().to(device)
     elif args.model == "vivq":
         model = None.to(device)
     else:
@@ -46,15 +45,14 @@ def train(proc_id, args):
     if not proc_id and args.node_id == 0:
         print(f"Number of Parameters: {sum([p.numel() for p in model.parameters()])}")
 
-    criterion = FirstStageLoss()
+    criterion = FirstStageLoss(device=device)
     lr = 3e-4
-    dataset = get_dataloader(args)
+    # dataset = get_dataloader(args)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
     optimizer_discriminator = optim.AdamW(criterion.discriminator.parameters(), lr=lr*1e-2)
-    logger = SummaryWriter(os.path.join("runs", args.run_name))
 
     if not proc_id and args.node_id == 0:
-        wandb.watch(model)
+        # wandb.watch(model)
         os.makedirs(f"results/{args.run_name}", exist_ok=True)
         os.makedirs(f"models/{args.run_name}", exist_ok=True)
 
@@ -69,9 +67,6 @@ def train(proc_id, args):
             print("Loading last checkpoint....")
         logs = torch.load(f"results/{args.run_name}/log.pt")
         start_step = logs["step"] + 1
-        losses = logs["losses"]
-        accuracies = logs["accuracies"]
-        total_loss, total_acc = losses[-1] * start_step, accuracies[-1] * start_step
         model.load_state_dict(torch.load(f"models/{args.run_name}/model.pt", map_location=device))
         if not proc_id and args.node_id == 0:
             print("Loaded model and EMA model.")
@@ -86,63 +81,55 @@ def train(proc_id, args):
         optimizer.load_state_dict(opt_state)
         del opt_state
     else:
-        losses = []
-        accuracies = []
-        start_step, total_loss, total_acc = 0, 0, 0
+        start_step = 0
 
     if parallel:
         model = DistributedDataParallel(model, device_ids=[device], output_device=device)
 
-    pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
+    # pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
     model.train()
-    for step, videos in pbar:
+    videos = torch.randn(1, 100, 3, 128, 128)
+    # for step, videos in pbar:
+    for step, _ in range(1000000):
         videos = videos.to(device)
 
         recon = model(videos)
         loss, d_loss = criterion(videos, recon)
         loss_adjusted = loss / grad_accum_steps
+        d_loss_adjusted = d_loss / grad_accum_steps
 
         loss_adjusted.backward()
+        d_loss_adjusted.backward()
         if (step + 1) % grad_accum_steps == 0:
             optimizer.step()
             optimizer_discriminator.step()
             scheduler.step()
             optimizer.zero_grad()
+            optimizer_discriminator.zero_grad()
 
-        total_loss += loss.item()
+        # if not proc_id and args.node_id == 0:
+            # pbar.set_postfix({
+            #     'loss': loss,
+            #     'd_loss': d_loss,
+            #     'lr': optimizer.param_groups[0]['lr']
+            # })
+            # wandb.log({
+            #     "loss": loss,
+            #     "d_loss": d_loss,
+            #     "lr": optimizer.param_groups[0]['lr'],
+            # })
 
-        if not proc_id and args.node_id == 0:
-            pbar.set_postfix({
-                'loss': total_loss / (step + 1),
-                'ppx': np.exp(total_loss / (step + 1)),
-                'lr': optimizer.param_groups[0]['lr']
-            })
-            wandb.log({
-                "loss": total_loss / (step + 1),
-                "ppx": np.exp(total_loss / (step + 1)),
-                "lr": optimizer.param_groups[0]['lr'],
-            })
-            logger.add_scalar("loss", total_loss / (step + 1), global_step=step)
-            logger.add_scalar("ppx", np.exp(total_loss / (step + 1)), global_step=step)
-            logger.add_scalar("lr", optimizer.param_groups[0]['lr'], global_step=step)
-
-        if args.node_id == 0 and proc_id == 0 and step % args.log_period == 0:
-            print(f"Step {step} - loss {total_loss / (step + 1)} - acc {total_acc / (step + 1)} - ppx {np.exp(total_loss / (step + 1))}")
-
-            losses.append(total_loss / (step + 1))
-            accuracies.append(total_acc / (step + 1))
-
-            model.eval()
-            with torch.no_grad():
-                pass
-
-            if step % args.extra_ckpt == 0:
-                torch.save(model.module.state_dict(), f"models/{args.run_name}/model_{step}.pt")
-                torch.save(optimizer.state_dict(), f"models/{args.run_name}/model_{step}_optim.pt")
-            torch.save(model.module.state_dict(), f"models/{args.run_name}/model.pt")
-            torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
-            torch.save({'step': step, 'losses': losses, 'accuracies': accuracies}, f"results/{args.run_name}/log.pt")
-
+        # if args.node_id == 0 and proc_id == 0 and step % args.log_period == 0:
+        #     model.eval()
+        #     with torch.no_grad():
+        #         pass
+        #
+        #     if step % args.extra_ckpt == 0:
+        #         torch.save(model.module.state_dict(), f"models/{args.run_name}/model_{step}.pt")
+        #         torch.save(optimizer.state_dict(), f"models/{args.run_name}/model_{step}_optim.pt")
+        #     torch.save(model.module.state_dict(), f"models/{args.run_name}/model.pt")
+        #     torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
+        #     torch.save({'step': step}, f"results/{args.run_name}/log.pt")
 
 
 def launch(args):
@@ -161,7 +148,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     args.run_name = "vivit_test"
     args.model = "vivit"
-    args.dataset_type = "webdataset"
     args.total_steps = 5_000_000
     args.batch_size = 22
     args.num_workers = 10
@@ -169,11 +155,12 @@ if __name__ == '__main__':
     args.extra_ckpt = 50_000
     args.accum_grad = 1
 
-    args.n_nodes = 8
-    args.node_id = int(os.environ["SLURM_PROCID"])
+    args.n_nodes = 1
+    # args.node_id = int(os.environ["SLURM_PROCID"])
+    args.node_id = 0
+    # args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
     args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
 
-    args.dataset_path = "pipe:aws s3 cp s3://s-laion/improved-aesthetics-laion-2B-en-subsets/aesthetics_tars/{000000..060207}.tar -"
     print("Launching with args: ", args)
     launch(
         args

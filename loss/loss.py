@@ -13,13 +13,15 @@ class FirstStageLoss(nn.Module):
         self.adv_weight = adv_weight
         self.perc_weight = perc_weight
         self.start_disc = start_disc
-        self.discriminator = Discriminator()
+        self.discriminator = Discriminator().to(device)
         self.lpips = lpips.LPIPS(net="vgg").to(device).requires_grad_(False)
 
-    def forward(self, images, reconstructions, vq_loss, step):
-        mse_loss = F.mse_loss(images, reconstructions)
+    def forward(self, videos, reconstructions, vq_loss, step):
+        videos = videos.view(-1, *videos.shape[2:])
+        reconstructions = reconstructions.view(-1, *reconstructions.shape[2:])
+        mse_loss = F.mse_loss(videos, reconstructions)
         if step > self.start_disc:
-            d_real = self.discriminator(images)
+            d_real = self.discriminator(videos)
             d_real_loss = F.binary_cross_entropy(d_real, torch.zeros_like(d_real)+0.1)
             d_fake = self.discriminator(reconstructions.detach())
             d_fake_loss = F.binary_cross_entropy(d_fake, torch.ones_like(d_fake)-0.1)
@@ -29,10 +31,15 @@ class FirstStageLoss(nn.Module):
         else:
             g_loss = reconstructions.new_tensor(0)
             d_loss = None
-        lpips_loss = self.lpips(images, reconstructions).mean()
+        lpips_loss = self.lpips(videos, reconstructions).mean()
 
         loss = self.mse_weight * mse_loss + self.adv_weight * g_loss + self.perc_weight * lpips_loss + self.vq_weight * vq_loss
 
         return loss, d_loss
 
 
+if __name__ == '__main__':
+    device = "cuda"
+    videos = torch.randn(1, 100, 3, 128, 128).to(device)
+    l = FirstStageLoss(device=device)
+    print(l(videos, videos, 1.0, 100000))

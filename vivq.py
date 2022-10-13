@@ -38,7 +38,7 @@ class TemporalSpatialAttention(nn.Module):
     def forward(self, x):
         base_shape = x.shape  # x -> B x T x (H x W) x C
         if self.pos_encodings:
-            x = x + self.spatial_positional_encoding + self.temporal_positional_encoding
+            x = x + self.spatial_positional_encoding + self.temporal_positional_encoding[:, :x.shape[1]]
         if self.spatial_first:
             x = self._spatial_attn(x, base_shape)
             x = self._temporal_attn(x, base_shape)
@@ -54,17 +54,20 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.video_patch_emb = nn.Conv3d(input_channels, hidden_channels, kernel_size=patch_size, stride=patch_size)
         self.image_patch_emb = nn.Conv2d(input_channels, hidden_channels, kernel_size=patch_size[1:], stride=patch_size[1:])
-        self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames, num_layers=num_layers,
+        self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames+1, num_layers=num_layers,
                                                   num_heads=num_heads)
 
-    def forward(self, x):
-        image, video = x[:, 0], x[:, 1:]
-        video = video.permute(0, 2, 1, 3, 4)  # B x T x C x H x W -> B x C x T x H x W
-        image = self.image_patch_emb(image)
-        video = self.video_patch_emb(video)
-        video = torch.cat([image.unsqueeze(2), video], dim=2)
-        video = video.view(*video.shape[:3], -1).permute(0, 2, 3, 1)  # -> B x T x (H x W) x C [I'll use this as a reference shape, so every function returns this shape]
-        video = self.attention(video)
+    def forward(self, image, video):
+        # image, video: 1 x 3 x 128 x 128, 1 x 100 x 3 x 128 x 128
+        image = self.image_patch_emb(image)  # 1 x 64 x 16 x 16
+        if video is not None:
+            video = video.permute(0, 2, 1, 3, 4)  # B x T x C x H x W -> B x C x T x H x W
+            video = self.video_patch_emb(video)  # 1 x 64 x 20 x 16 x 16
+            video = torch.cat([image.unsqueeze(2), video], dim=2)  # 1 x 64 x 21 x 16 x 16
+        else:
+            video = image.unsqueeze(2)
+        video = video.view(*video.shape[:3], -1).permute(0, 2, 3, 1)  # B x T x (H x W) x C -> 1 x 21 x (16*16) x 64
+        video = self.attention(video)  # 1 x 21 x 256 x 64
         return video
 
 
@@ -73,17 +76,24 @@ class Decoder(nn.Module):
                  num_layers=4, num_heads=4):
         super(Decoder, self).__init__()
         self.size = size
-        self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames, num_layers=num_layers,
+        self.attention = TemporalSpatialAttention(hidden_channels, size, compressed_frames+1, num_layers=num_layers,
                                                   num_heads=num_heads, spatial_first=False)
-        self.unpatch_emb = nn.ConvTranspose3d(hidden_channels, input_channels, kernel_size=patch_size,
-                                              stride=patch_size)
+        self.video_unpatch_emb = nn.ConvTranspose3d(hidden_channels, input_channels, kernel_size=patch_size, stride=patch_size)
+        self.image_unpatch_emb = nn.ConvTranspose2d(hidden_channels, input_channels, kernel_size=patch_size[1:], stride=patch_size[1:])
 
     def forward(self, x):
-        x = self.attention(x)
-        x = x.permute(0, 3, 1, 2).view(x.size(0), x.size(3), x.size(1), self.size,
-                                       self.size)  # B x T x (H x W) x C -> B x C x T x H x W
-        x = self.unpatch_emb(x)
-        x = x.permute(0, 2, 1, 3, 4)  # B x C x T x H x W -> B x T x C x H x W
+        # example x: 1 x 21 x 256 x 64
+        x = self.attention(x)  # 1 x 21 x 256 x 64
+        x = x.permute(0, 3, 1, 2).view(x.size(0), x.size(3), x.size(1), self.size, self.size)  # B x T x (H x W) x C -> B x C x T x H x W
+        if x.shape[2] > 1:  # not only image training
+            image, video = x[:, :, 0], x[:, :, 1:]
+            video = self.video_unpatch_emb(video)
+            image = self.image_unpatch_emb(image)
+            x = torch.cat([image.unsqueeze(2), video], dim=2).permute(0, 2, 1, 3, 4)  # B x C x T x H x W -> B x T x C x H x W
+        else:
+            image = x[:, :, 0]
+            image = self.image_unpatch_emb(image)
+            x = image.unsqueeze(2).permute(0, 2, 1, 3, 4)
         return x
 
 
@@ -122,10 +132,9 @@ class VQModule(nn.Module):
         return qe, commit_loss, indices
 
 
-class VQModel(nn.Module):
-    def __init__(self, batch_size=1, compressed_frames=20, latent_size=32, c_hidden=64, c_codebook=16,
-                 codebook_size=1024,
-                 num_layers_enc=4, num_layers_dec=4, num_heads=4):
+class VIVIT(nn.Module):
+    def __init__(self, compressed_frames=20, latent_size=32, c_hidden=64, c_codebook=16,
+                 codebook_size=1024, num_layers_enc=4, num_layers_dec=4, num_heads=4):
         super().__init__()
         self.encoder = Encoder(hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames,
                                num_layers=num_layers_enc, num_heads=num_heads)
@@ -139,12 +148,12 @@ class VQModel(nn.Module):
         self.codebook_size = codebook_size
         self.vqmodule = VQModule(
             c_codebook, k=codebook_size,
-            q_init=0, q_refresh_step=15010, q_refresh_end=15010 * 130
-            # q_init=15010 * 20, q_refresh_step=15010, q_refresh_end=15010 * 130
+            # q_init=0, q_refresh_step=15010, q_refresh_end=15010 * 130
+            q_init=15010 * 20, q_refresh_step=15010, q_refresh_end=15010 * 130
         )
 
-    def encode(self, x):
-        x = self.encoder(x)  # B x T x (H x W) x C
+    def encode(self, image, video):
+        x = self.encoder(image, video)  # B x T x (H x W) x C
         x = self.cod_mapper(x)
         x = self.batchnorm(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         qe, commit_loss, indices = self.vqmodule(x, dim=-1)
@@ -158,15 +167,18 @@ class VQModel(nn.Module):
     def decode_indices(self, x):
         return self.decode(self.vqmodule.vquantizer.idx2vq(x, dim=-1))
 
-    def forward(self, x):
-        (_, qe), commit_loss, _ = self.encode(x)
+    def forward(self, image, video=None):
+        (_, qe), commit_loss, _ = self.encode(image, video)
         decoded = self.decode(qe)
         return decoded, commit_loss
 
 
 if __name__ == '__main__':
     device = "cpu"
-    vq = VQModel(latent_size=16).to(device)
+    vq = VIVIT(latent_size=16).to(device)
     print(sum([p.numel() for p in vq.parameters()]))
-    x = torch.randn(1, 100, 3, 128, 128).to(device)
-    vq(x)
+    image = torch.randn(1, 3, 128, 128).to(device)
+    video = torch.randn(1, 100, 3, 128, 128).to(device)
+    r = vq(image, video)[0]
+    # r = vq(image)[0]
+    print(r.shape)
