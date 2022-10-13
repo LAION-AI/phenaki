@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from discriminator import Discriminator
+from .discriminator import Discriminator
 import lpips
 
 
 class FirstStageLoss(nn.Module):
-    def __init__(self, mse_weight=1.0, vq_weight=0.1, adv_weight=0.1, perc_weight=0.1, start_disc=10000, device="cpu"):
+    def __init__(self, mse_weight=1.0, vq_weight=0.1, adv_weight=0.1, perc_weight=0.1, start_disc=0, device="cpu"):
         super(FirstStageLoss, self).__init__()
         self.mse_weight = mse_weight
         self.vq_weight = vq_weight
@@ -16,11 +16,11 @@ class FirstStageLoss(nn.Module):
         self.discriminator = Discriminator().to(device)
         self.lpips = lpips.LPIPS(net="vgg").to(device).requires_grad_(False)
 
-    def forward(self, videos, reconstructions, vq_loss, step):
-        videos = videos.view(-1, *videos.shape[2:])
+    def forward(self, images, videos, reconstructions, vq_loss, step):
+        videos = torch.cat([images.unsqueeze(1), videos], dim=1).view(-1, *videos.shape[2:])
         reconstructions = reconstructions.view(-1, *reconstructions.shape[2:])
         mse_loss = F.mse_loss(videos, reconstructions)
-        if step > self.start_disc:
+        if step >= self.start_disc:
             d_real = self.discriminator(videos)
             d_real_loss = F.binary_cross_entropy(d_real, torch.zeros_like(d_real)+0.1)
             d_fake = self.discriminator(reconstructions.detach())

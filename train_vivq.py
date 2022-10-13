@@ -36,7 +36,7 @@ def train(proc_id, args):
 
     if args.model == "vivit":
         print(f"Model: DenoiseGIC")
-        model = VIVIT().to(device)
+        model = VIVIT(latent_size=16, compressed_frames=5, patch_size=(2, 8, 8)).to(device)
     elif args.model == "vivq":
         model = None.to(device)
     else:
@@ -88,13 +88,16 @@ def train(proc_id, args):
 
     # pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
     model.train()
-    videos = torch.randn(1, 100, 3, 128, 128)
+    images = torch.randn(1, 3, 128, 128)
+    videos = torch.randn(1, 10, 3, 128, 128)
     # for step, videos in pbar:
-    for step, _ in range(1000000):
+    pbar = tqdm(range(1000000))
+    for step in pbar:
+        images = images.to(device)
         videos = videos.to(device)
 
-        recon = model(videos)
-        loss, d_loss = criterion(videos, recon)
+        recon, vq_loss = model(images, videos)
+        loss, d_loss = criterion(images, videos, recon, vq_loss, step)
         loss_adjusted = loss / grad_accum_steps
         d_loss_adjusted = d_loss / grad_accum_steps
 
@@ -107,12 +110,12 @@ def train(proc_id, args):
             optimizer.zero_grad()
             optimizer_discriminator.zero_grad()
 
-        # if not proc_id and args.node_id == 0:
-            # pbar.set_postfix({
-            #     'loss': loss,
-            #     'd_loss': d_loss,
-            #     'lr': optimizer.param_groups[0]['lr']
-            # })
+        if not proc_id and args.node_id == 0:
+            pbar.set_postfix({
+                'loss': loss.item(),
+                'd_loss': d_loss.item(),
+                'lr': optimizer.param_groups[0]['lr']
+            })
             # wandb.log({
             #     "loss": loss,
             #     "d_loss": d_loss,
@@ -159,7 +162,7 @@ if __name__ == '__main__':
     # args.node_id = int(os.environ["SLURM_PROCID"])
     args.node_id = 0
     # args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
-    args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
+    args.devices = [0]
 
     print("Launching with args: ", args)
     launch(

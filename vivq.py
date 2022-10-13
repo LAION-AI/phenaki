@@ -29,7 +29,7 @@ class TemporalSpatialAttention(nn.Module):
         return x
 
     def _temporal_attn(self, x, base_shape):
-        mask = torch.triu(torch.ones(base_shape[1], base_shape[1]) * float('-inf'), diagonal=1)
+        mask = torch.triu(torch.ones(base_shape[1], base_shape[1]) * float('-inf'), diagonal=1).to(x.device)
         x = x.permute(0, 2, 1, 3).view(-1, x.size(1), x.size(-1))  # B x T x (H x W) x C -> (B x H x W) x T x C
         x = self.temporal_transformer(x, mask=mask)
         x = x.view(base_shape[0], -1, *x.shape[1:]).permute(0, 2, 1, 3)  # (B x H x W) x T x C -> B x T x (H x W) x C
@@ -133,23 +133,23 @@ class VQModule(nn.Module):
 
 
 class VIVIT(nn.Module):
-    def __init__(self, compressed_frames=20, latent_size=32, c_hidden=64, c_codebook=16,
+    def __init__(self, patch_size=(5, 8, 8), compressed_frames=20, latent_size=32, c_hidden=64, c_codebook=16,
                  codebook_size=1024, num_layers_enc=4, num_layers_dec=4, num_heads=4):
         super().__init__()
-        self.encoder = Encoder(hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames,
+        self.encoder = Encoder(patch_size=patch_size, hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames,
                                num_layers=num_layers_enc, num_heads=num_heads)
         self.cod_mapper = nn.Linear(c_hidden, c_codebook)
         self.batchnorm = nn.BatchNorm2d(c_codebook)
 
         self.cod_unmapper = nn.Linear(c_codebook, c_hidden)
-        self.decoder = Decoder(hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames,
+        self.decoder = Decoder(patch_size=patch_size, hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames,
                                num_layers=num_layers_dec, num_heads=num_heads)
 
         self.codebook_size = codebook_size
         self.vqmodule = VQModule(
             c_codebook, k=codebook_size,
-            # q_init=0, q_refresh_step=15010, q_refresh_end=15010 * 130
-            q_init=15010 * 20, q_refresh_step=15010, q_refresh_end=15010 * 130
+            q_init=0, q_refresh_step=15010, q_refresh_end=15010 * 130
+            # q_init=15010 * 20, q_refresh_step=15010, q_refresh_end=15010 * 130
         )
 
     def encode(self, image, video):
