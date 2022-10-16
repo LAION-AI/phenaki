@@ -32,7 +32,7 @@ def train(proc_id, args):
     if parallel:
         torch.cuda.set_device(proc_id)
         torch.backends.cudnn.benchmark = True
-        dist.init_process_group(backend="nccl", init_method="file:///fsx/mas/paella_unet/dist_file",
+        dist.init_process_group(backend="nccl", init_method="file:///fsx/mas/phenaki/dist_file",
                                 world_size=args.n_nodes * len(args.devices),
                                 rank=proc_id + len(args.devices) * args.node_id)
         torch.set_num_threads(6)
