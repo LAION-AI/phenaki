@@ -10,13 +10,14 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from loss.loss import FirstStageLoss
-from vivq import VIVIT
+from cvivit import VIVIT
+from vivq import VIVQ
 from utils import get_dataloader
 
 
 def train(proc_id, args):
     if os.path.exists(f"results/{args.run_name}/log.pt"):
-        resume = True
+        resume = False  # TODO: change back
     else:
         resume = False
     if not proc_id and args.node_id == 0:
@@ -41,7 +42,7 @@ def train(proc_id, args):
         print(f"Model: DenoiseGIC")
         model = VIVIT(latent_size=16, compressed_frames=5, patch_size=(2, 8, 8)).to(device)
     elif args.model == "vivq":
-        model = None.to(device)
+        model = VIVQ().to(device)
     else:
         raise NotImplementedError()
 
@@ -89,14 +90,14 @@ def train(proc_id, args):
     if parallel:
         model = DistributedDataParallel(model, device_ids=[device], output_device=device)
 
-    # pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
     model.train()
     # images = torch.randn(1, 3, 128, 128)
     # videos = torch.randn(1, 10, 3, 128, 128)
-    images, videos = next(iter(dataset))
-    # for step, videos in pbar:
-    pbar = tqdm(range(1000000))
-    for step in pbar:
+    # images, videos = next(iter(dataset))
+    pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
+    # pbar = tqdm(range(1000000))
+    for step, (images, videos) in pbar:
+    # for step in pbar:
         images = images.to(device)
         videos = videos.to(device)
 
@@ -127,20 +128,23 @@ def train(proc_id, args):
             # })
 
         if args.node_id == 0 and proc_id == 0 and step % args.log_period == 0:
-            orig = torch.cat([images.unsqueeze(1), videos], dim=1)
-            orig = orig[0]
+            if videos is not None:
+                orig = torch.cat([images.unsqueeze(1), videos], dim=1)
+                orig = orig[0]
+            else:
+                orig = images
             recon = recon[0]
-            comp = vutils.make_grid(torch.cat([orig, recon]), nrow=len(orig)).detach().cpu().permute(1, 2, 0)
-            plt.imshow(comp)
+            comp = vutils.make_grid(torch.cat([orig, recon]), nrow=len(orig)).detach().cpu()
+            plt.imshow(comp.permute(1, 2, 0))
             plt.show()
-            # vutils.save_image(comp, f"results/{args.run_name}/{step}.jpg")
+            vutils.save_image(comp, f"results/{args.run_name}/{step}.jpg")
 
             # if step % args.extra_ckpt == 0:
             #     torch.save(model.module.state_dict(), f"models/{args.run_name}/model_{step}.pt")
             #     torch.save(optimizer.state_dict(), f"models/{args.run_name}/model_{step}_optim.pt")
-            # torch.save(model.module.state_dict(), f"models/{args.run_name}/model.pt")
-            # torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
-            # torch.save({'step': step}, f"results/{args.run_name}/log.pt")
+            torch.save(model.state_dict(), f"models/{args.run_name}/model.pt")
+            torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
+            torch.save({'step': step}, f"results/{args.run_name}/log.pt")
 
 
 def launch(args):
@@ -157,12 +161,12 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "vivit_test"
-    args.model = "vivit"
+    args.run_name = "vivq_test_one_video_save_model"
+    args.model = "vivq"
     args.total_steps = 5_000_000
     args.batch_size = 1
     args.num_workers = 10
-    args.log_period = 50
+    args.log_period = 100
     args.extra_ckpt = 50_000
     args.accum_grad = 1
 

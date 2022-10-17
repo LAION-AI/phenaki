@@ -13,19 +13,19 @@ class VideoDataset(Dataset):
 
         self.clip_len = clip_len
         self.video_transform = video_transform
+        path = "./videos/test.mp4"
+        video, _, _ = torchvision.io.read_video(path)
+        self.video = video.permute(0, 3, 1, 2) / 255.
 
     def __len__(self):
         # return len(self.samples)
-        return 1
+        return 1000000
 
     def __getitem__(self, item):
         # path = random.choice(self.samples)
-        path = "./videos/test.mp4"
-        video, _, metadata = torchvision.io.read_video(path)
-        video = video.permute(0, 3, 1, 2) / 255.
-        max_seek = video.shape[0] - (self.clip_len / video.shape[0])
+        max_seek = self.video.shape[0] - self.clip_len
         start = math.floor(random.uniform(0., max_seek))
-        video = video[start:start+self.clip_len+1]
+        video = self.video[start:start+self.clip_len+1]
         if self.video_transform:
             video = self.video_transform(video)
         image, video = video[0], video[1:]
@@ -50,15 +50,15 @@ def get_dataloader(args):
 # video = transforms(video)
 if __name__ == '__main__':
     d = VideoDataset(video_transform=transforms)
-    sample_vid = d[0]
-    print(sample_vid.shape)
-
-    import matplotlib.pyplot as plt
-
-    plt.figure(figsize=(12, 12))
-    for i in range(10):
-        plt.subplot(4, 4, i + 1)
-        plt.imshow(sample_vid[i].permute(1, 2, 0))
-        plt.axis("off")
-
-    plt.show()
+    # sample_vid = d[0]
+    # print(sample_vid.shape)
+    #
+    # import matplotlib.pyplot as plt
+    #
+    # plt.figure(figsize=(12, 12))
+    # for i in range(10):
+    #     plt.subplot(4, 4, i + 1)
+    #     plt.imshow(sample_vid[i].permute(1, 2, 0))
+    #     plt.axis("off")
+    #
+    # plt.show()
