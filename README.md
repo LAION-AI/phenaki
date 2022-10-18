@@ -25,3 +25,4 @@
 - [ ] does the first-stage use a pretrained ViT as proposed in ViViT?
 - [ ] how to do positional encoding? [current approach](https://github.com/LAION-AI/phenaki/blob/main/vivq.py#L41)
 - [ ] best way to construct dataloader for videos?
+- [ ] The dataset 'Moments in Time' does not have captions, and only contains labels. How are captions generated? "A video of {label}"?
