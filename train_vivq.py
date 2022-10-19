@@ -161,10 +161,11 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "vivq_webdataset_skip_frames"
+    args.run_name = "test_batch"
     args.model = "vivq"
     args.webdataset = True
     args.dataset_path = "file:./data/6.tar"
+    # args.dataset_path = "file:./fsx/mas/phenaki/data/raw_data/Moments_in_Time_Raw/tar_files/{0..363}.tar"
     args.total_steps = 5_000_000
     args.batch_size = 1
     args.num_workers = 10

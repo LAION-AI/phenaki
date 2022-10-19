@@ -206,7 +206,7 @@ class VQModule(nn.Module):
 
 
 class VIVQ(nn.Module):
-    def __init__(self, base_channels=3, c_hidden=256, c_codebook=16, codebook_size=1024):
+    def __init__(self, base_channels=3, c_hidden=512, c_codebook=16, codebook_size=1024):
         super().__init__()
         self.encoder = Encoder(base_channels, c_hidden=c_hidden)
         self.cod_mapper = nn.Sequential(
@@ -255,7 +255,7 @@ if __name__ == '__main__':
     video = torch.randn(1, 10, 3, 128, 128).to(device)
     # e = Encoder(c_in=3).to(device)
     # d = Decoder(c_out=3).to(device)
-    vq = VIVQ().to(device)
+    vq = VIVQ(c_hidden=512).to(device)
     print(sum([p.numel() for p in vq.parameters()]))
     # rb = ResBlockvq(3, 100).to(device)
     # print(rb(x).shape)
