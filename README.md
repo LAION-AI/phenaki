@@ -21,6 +21,10 @@
 - [ ] Full training second stage
 - [ ] ....
 
+## TODO
+- [ ] Activate KMeans in VQGAN training
+- [ ] Move dataset to s3
+
 ## Open Questions:
 - [ ] does the first-stage use a pretrained ViT as proposed in ViViT?
 - [ ] how to do positional encoding? [current approach](https://github.com/LAION-AI/phenaki/blob/main/vivq.py#L41)
