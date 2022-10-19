@@ -161,7 +161,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "vivq_webdataset"
+    args.run_name = "vivq_webdataset_skip_frames"
     args.model = "vivq"
     args.webdataset = True
     args.dataset_path = "file:./data/6.tar"
@@ -171,6 +171,9 @@ if __name__ == '__main__':
     args.log_period = 100
     args.extra_ckpt = 50_000
     args.accum_grad = 1
+
+    args.clip_len = 10
+    args.skip_frames = 3
 
     args.n_nodes = 1
     # args.node_id = int(os.environ["SLURM_PROCID"])
