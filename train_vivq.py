@@ -161,13 +161,13 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "test_batch"
+    args.run_name = "test_server"
     args.model = "vivq"
     args.webdataset = True
-    args.dataset_path = "file:./data/6.tar"
-    # args.dataset_path = "file:./fsx/mas/phenaki/data/raw_data/Moments_in_Time_Raw/tar_files/{0..363}.tar"
+    # args.dataset_path = "file:./data/6.tar"
+    args.dataset_path = "file:/fsx/mas/phenaki/data/raw_data/Moments_in_Time_Raw/tar_files/{0..363}.tar"
     args.total_steps = 5_000_000
-    args.batch_size = 1
+    args.batch_size = 2
     args.num_workers = 10
     args.log_period = 100
     args.extra_ckpt = 50_000
@@ -177,10 +177,10 @@ if __name__ == '__main__':
     args.skip_frames = 3
 
     args.n_nodes = 1
-    # args.node_id = int(os.environ["SLURM_PROCID"])
-    args.node_id = 0
-    # args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
-    args.devices = [0]
+    args.node_id = int(os.environ["SLURM_PROCID"])
+    # args.node_id = 0
+    args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
+    # args.devices = [0]
 
     print("Launching with args: ", args)
     launch(

@@ -88,7 +88,7 @@ class Encoder(nn.Module):
 
     def forward(self, image, video):
         video = video.permute(0, 2, 1, 3, 4)
-        video = torch.cat([self.learned_frame.unsqueeze(0), image.unsqueeze(2), video], dim=2)
+        video = torch.cat([self.learned_frame.unsqueeze(0).expand(video.shape[0], -1, -1, -1, -1), image.unsqueeze(2), video], dim=2)
         video = self.stem(video)
         s = None
         if len(self.encoder) > 0:
