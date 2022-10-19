@@ -189,12 +189,12 @@ class VQModule(nn.Module):
             if self.q_step_counter < self.q_init:
                 qe, commit_loss, indices = x, x.new_tensor(0), None
             else:
-                if self.q_step_counter < self.q_init + self.q_refresh_end:
-                    if (
-                            self.q_step_counter + self.q_init) % self.q_refresh_step == 0 or self.q_step_counter == self.q_init or self.q_step_counter == self.q_init + self.q_refresh_end - 1:
-                        kmeans = KMeans(n_clusters=self.codebook_size, mode='euclidean', verbose=0)
-                        kmeans.fit_predict(self.reservoir)
-                        self.vquantizer.codebook.weight.data = kmeans.centroids.detach()
+                # if self.q_step_counter < self.q_init + self.q_refresh_end:
+                #     if (self.q_step_counter + self.q_init) % self.q_refresh_step == 0 or self.q_step_counter == self.q_init or self.q_step_counter == self.q_init + self.q_refresh_end - 1:
+                #         print("Running KMeans")
+                #         kmeans = KMeans(n_clusters=self.codebook_size, mode='euclidean', verbose=0)
+                #         kmeans.fit_predict(self.reservoir)
+                #         self.vquantizer.codebook.weight.data = kmeans.centroids.detach()
                 qe, (_, commit_loss), indices = self.vquantizer(x, dim=dim)
         else:
             if self.q_step_counter < self.q_init:
@@ -219,7 +219,7 @@ class VIVQ(nn.Module):
         self.codebook_size = codebook_size
         self.vqmodule = VQModule(
             c_codebook, k=codebook_size,
-            q_init=0, q_refresh_step=15010, q_refresh_end=15010 * 130
+            q_init=1000, q_refresh_step=1000, q_refresh_end=5000
             # q_init=15010 * 20, q_refresh_step=15010, q_refresh_end=15010 * 130
         )
 

@@ -135,8 +135,8 @@ def train(proc_id, args):
                 orig = images
             recon = recon[0]
             comp = vutils.make_grid(torch.cat([orig, recon]), nrow=len(orig)).detach().cpu()
-            plt.imshow(comp.permute(1, 2, 0))
-            plt.show()
+            # plt.imshow(comp.permute(1, 2, 0))
+            # plt.show()
             vutils.save_image(comp, f"results/{args.run_name}/{step}.jpg")
 
             # if step % args.extra_ckpt == 0:
@@ -161,8 +161,10 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "vivq_test_one_video_save_model"
+    args.run_name = "vivq_webdataset"
     args.model = "vivq"
+    args.webdataset = True
+    args.dataset_path = "file:./data/6.tar"
     args.total_steps = 5_000_000
     args.batch_size = 1
     args.num_workers = 10
