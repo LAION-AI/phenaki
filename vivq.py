@@ -210,7 +210,7 @@ class VIVQ(nn.Module):
         super().__init__()
         self.encoder = Encoder(base_channels, c_hidden=c_hidden)
         self.cod_mapper = nn.Sequential(
-            nn.Conv3d(c_hidden, c_codebook, kernel_size=1),
+            nn.Conv3d(c_hidden, c_codebook, kernel_size=1, bias=False),
             nn.BatchNorm3d(c_codebook),
         )
         self.cod_unmapper = nn.Conv3d(c_codebook, c_hidden, kernel_size=1)
