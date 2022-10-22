@@ -52,10 +52,10 @@ def get_dataloader(args):
         dataset = wds.WebDataset(args.dataset_path, resampled=True, handler=warn_and_continue).decode(wds.torch_video,
                     handler=warn_and_continue).map(ProcessData(clip_len=args.clip_len, skip_frames=args.skip_frames),
                     handler=warn_and_continue).to_tuple("image", "video", handler=warn_and_continue).shuffle(690, handler=warn_and_continue)
-        dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate)  # TODO: num_workers=args.num_workers
+        dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, collate_fn=collate)  # TODO: num_workers=args.num_workers
     else:
         dataset = VideoDataset(video_transform=transforms)
-        dataloader = DataLoader(dataset, batch_size=args.batch_size)  # TODO: add num_workers=args.num_workers
+        dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers)  # TODO: add num_workers=args.num_workers
     return dataloader
 
 
@@ -87,7 +87,6 @@ class ProcessData:
         return data
 
 
-
 # video_path = "./videos/test.mp4"
 # video, _, _ = torchvision.io.read_video(video_path)
 # video = video.permute(0, 3, 2, 1) / 255.
@@ -107,12 +106,12 @@ if __name__ == '__main__':
     #
     # plt.show()
 
-    dataset = wds.WebDataset("file:./data/6.tar", resampled=True, handler=warn_and_continue).decode(wds.torch_video,
-                handler=warn_and_continue).map(ProcessData(), handler=warn_and_continue).to_tuple("image", "video",
-                handler=warn_and_continue).shuffle(690, handler=warn_and_continue)
-    dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate)
+    dataset = wds.WebDataset("./data/6.tar", resampled=True).decode(wds.torch_video,
+        ).map(ProcessData()).to_tuple("image", "video",
+        ).shuffle(690)
+    dataloader = DataLoader(dataset, batch_size=1, collate_fn=collate)
 
     for sample in dataloader:
-        x = 1
+        break
 
     print(sample)

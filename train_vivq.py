@@ -17,7 +17,7 @@ from utils import get_dataloader
 
 def train(proc_id, args):
     if os.path.exists(f"results/{args.run_name}/log.pt"):
-        resume = False  # TODO: change back
+        resume = True  # TODO: change back
     else:
         resume = False
     if not proc_id and args.node_id == 0:
@@ -55,6 +55,9 @@ def train(proc_id, args):
     optimizer = optim.AdamW(model.parameters(), lr=lr)
     optimizer_discriminator = optim.AdamW(criterion.discriminator.parameters(), lr=lr*1e-2)
 
+    if parallel:
+        model = DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+
     if not proc_id and args.node_id == 0:
         # wandb.watch(model)
         os.makedirs(f"results/{args.run_name}", exist_ok=True)
@@ -73,7 +76,7 @@ def train(proc_id, args):
         start_step = logs["step"] + 1
         model.load_state_dict(torch.load(f"models/{args.run_name}/model.pt", map_location=device))
         if not proc_id and args.node_id == 0:
-            print("Loaded model and EMA model.")
+            print("Loaded model....")
         opt_state = torch.load(f"models/{args.run_name}/optim.pt", map_location=device)
         last_lr = opt_state["param_groups"][0]["lr"]
         with torch.no_grad():
@@ -86,9 +89,6 @@ def train(proc_id, args):
         del opt_state
     else:
         start_step = 0
-
-    if parallel:
-        model = DistributedDataParallel(model, device_ids=[device], output_device=device)
 
     model.train()
     # images = torch.randn(1, 3, 128, 128)
@@ -139,9 +139,9 @@ def train(proc_id, args):
             # plt.show()
             vutils.save_image(comp, f"results/{args.run_name}/{step}.jpg")
 
-            # if step % args.extra_ckpt == 0:
-            #     torch.save(model.module.state_dict(), f"models/{args.run_name}/model_{step}.pt")
-            #     torch.save(optimizer.state_dict(), f"models/{args.run_name}/model_{step}_optim.pt")
+            if step % args.extra_ckpt == 0:
+                torch.save(model.module.state_dict(), f"models/{args.run_name}/model_{step}.pt")
+                torch.save(optimizer.state_dict(), f"models/{args.run_name}/model_{step}_optim.pt")
             torch.save(model.state_dict(), f"models/{args.run_name}/model.pt")
             torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
             torch.save({'step': step}, f"results/{args.run_name}/log.pt")
@@ -161,16 +161,16 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "test_server"
+    args.run_name = "vivq_2"
     args.model = "vivq"
     args.webdataset = True
     # args.dataset_path = "file:./data/6.tar"
-    args.dataset_path = "file:/fsx/mas/phenaki/data/raw_data/Moments_in_Time_Raw/tar_files/{0..363}.tar"
+    args.dataset_path = "/fsx/mas/phenaki/data/raw_data/Moments_in_Time_Raw/tar_files/{0..363}.tar"
     args.total_steps = 5_000_000
-    args.batch_size = 2
+    args.batch_size = 10
     args.num_workers = 10
     args.log_period = 100
-    args.extra_ckpt = 50_000
+    args.extra_ckpt = 10_000
     args.accum_grad = 1
 
     args.clip_len = 10

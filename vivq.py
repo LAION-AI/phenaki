@@ -17,13 +17,6 @@ class ResBlockvq(nn.Module):
             nn.GELU(),
             nn.Conv3d(c_hidden, c, kernel_size=1),
         )
-        # self.l1 = nn.GELU()
-        # self.l2 = nn.Conv3d((c + c_cond), c_hidden, kernel_size=1)
-        # self.l3 = nn.GELU()
-        # self.ref = nn.ReflectionPad3d(kernel_size // 2)
-        # self.l5 = nn.Conv3d(c_hidden, c_hidden, kernel_size=kernel_size, groups=c_hidden)
-        # self.l6 = nn.GELU()
-        # self.l7 = nn.Conv3d(c_hidden, c, kernel_size=1)
         self.scaler = scaler
 
     def forward(self, x, s=None, encoder=True, i=None):
@@ -31,14 +24,6 @@ class ResBlockvq(nn.Module):
         if s is not None:
             x = torch.cat([x, s], dim=1)
         x = res + self.resblock(x)
-        # x = self.l1(x)
-        # x = self.l2(x)
-        # x = self.l3(x)
-        # x = self.ref(x)
-        # x = self.l5(x)
-        # x = self.l6(x)
-        # x = self.l7(x)
-        # x += res
         if self.scaler is not None:
             if encoder:
                 x = x.permute(0, 2, 1, 3, 4)
