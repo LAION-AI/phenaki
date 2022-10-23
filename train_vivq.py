@@ -39,7 +39,6 @@ def train(proc_id, args):
         torch.set_num_threads(6)
 
     if args.model == "vivit":
-        print(f"Model: DenoiseGIC")
         model = VIVIT(latent_size=16, compressed_frames=5, patch_size=(2, 8, 8)).to(device)
     elif args.model == "vivq":
         model = VIVQ().to(device)
