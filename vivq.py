@@ -12,7 +12,7 @@ class ResBlockvq(nn.Module):
             nn.GELU(),
             nn.Conv3d((c + c_cond), c_hidden, kernel_size=1),
             nn.GELU(),
-            nn.ReflectionPad3d(kernel_size // 2),
+            nn.ReplicationPad3d(kernel_size // 2),
             nn.Conv3d(c_hidden, c_hidden, kernel_size=kernel_size, groups=c_hidden),
             nn.GELU(),
             nn.Conv3d(c_hidden, c, kernel_size=1),
@@ -71,9 +71,13 @@ class Encoder(nn.Module):
 
         self.learned_frame = nn.Parameter(torch.randn(3, 1, 128, 128) / (c_hidden ** 0.5))
 
-    def forward(self, image, video):
-        video = video.permute(0, 2, 1, 3, 4)
-        video = torch.cat([self.learned_frame.unsqueeze(0).expand(video.shape[0], -1, -1, -1, -1), image.unsqueeze(2), video], dim=2)
+    def forward(self, image, video=None):
+        image = torch.cat([self.learned_frame.unsqueeze(0).expand(image.shape[0], -1, -1, -1, -1), image.unsqueeze(2)], dim=2)
+        if video is not None:
+            video = video.permute(0, 2, 1, 3, 4)
+            video = torch.cat([image, video], dim=2)
+        else:
+            video = image
         video = self.stem(video)
         s = None
         if len(self.encoder) > 0:
@@ -216,14 +220,17 @@ class VIVQ(nn.Module):
         qe, commit_loss, indices = self.vqmodule(x, dim=-1)
         return (x, qe), commit_loss, indices, shape
 
-    def decode(self, x, shape):
-        x = x.permute(0, 3, 1, 2).view(shape)
+    def decode(self, x, shape=None):
+        if shape is not None:
+            x = x.permute(0, 3, 1, 2).view(shape)
         x = self.cod_unmapper(x)
         x = self.decoder(x)
         return x
 
-    def decode_indices(self, x):
-        return self.decode(self.vqmodule.vquantizer.idx2vq(x, dim=-1))
+    def decode_indices(self, x, shape=None):
+        if shape is not None:
+            x = x.view(x.shape[0], *shape)
+        return self.decode(self.vqmodule.vquantizer.idx2vq(x, dim=-1).permute(0, 4, 1, 2, 3))
 
     def forward(self, image, video=None):
         # print(image.shape, video.shape)
@@ -238,6 +245,7 @@ if __name__ == '__main__':
     device = "cuda"
     image = torch.randn(1, 3, 128, 128).to(device)
     video = torch.randn(1, 10, 3, 128, 128).to(device)
+    video = None
     # e = Encoder(c_in=3).to(device)
     # d = Decoder(c_out=3).to(device)
     vq = VIVQ(c_hidden=512).to(device)

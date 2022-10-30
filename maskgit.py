@@ -182,23 +182,16 @@ class MaskGit(nn.Module):
 
         self.to_logits = nn.Linear(dim, num_tokens)
 
-    def forward_with_cond_scale( self, *args, cond_scale=3, **kwargs):
-        logits = self.forward(*args, cond_drop_prob=0., **kwargs)
-
-        if cond_scale == 1:
-            return logits
-
-        null_logits = self.forward(*args, cond_drop_prob=1., **kwargs)
-        return null_logits + (logits - null_logits) * cond_scale
+        self.loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     def gamma(self, r):
         return (r * torch.pi / 2).cos()
 
     def add_noise(self, x, r):
-        r = self.gamma(r)[:, None, None]
-        mask = torch.bernoulli(r * torch.ones_like(x), )
-        mask = mask.round().long()
-        x = x * (1 - mask) + self.mask_id * mask
+        r = self.gamma(r)[:, None]
+        mask = torch.bernoulli(r * torch.ones_like(x))
+        mask = mask.round().bool()
+        x = x * (~mask) + self.mask_id * mask
         return x, mask
 
     def forward(self, x, text_cond=None, **kwargs):
@@ -210,6 +203,13 @@ class MaskGit(nn.Module):
         x = self.transformer(x, text_cond, **kwargs)
 
         return self.to_logits(x)
+
+    def loss(self, pred, video_indices, mask):
+        acc = (pred.permute(0, 2, 1).argmax(1) == video_indices).float().mean()
+        video_indices = video_indices[mask]  # 839
+        mask = mask.flatten()  # 1536
+        pred = pred.view(-1, pred.shape[-1])[mask]  # 839x1024
+        return self.loss_fn(pred, video_indices), acc
 
 
 class MaskGitTrainWrapper(nn.Module):
