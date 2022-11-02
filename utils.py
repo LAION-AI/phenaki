@@ -2,7 +2,7 @@ import math
 import random
 import torch
 import torchvision
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, IterableDataset
 import webdataset as wds
 from webdataset.handlers import warn_and_continue
 
@@ -41,29 +41,59 @@ transforms = torchvision.transforms.Compose([
         ])
 
 
-def collate(batch):
+def collate_first_stage(batch):
     images = torch.stack([i[0] for i in batch], dim=0)
     videos = torch.stack([i[1] for i in batch], dim=0)
     return [images, videos]
 
 
+def collate_second_stage(batch):
+    if len(batch[0]) == 2:
+        images = torch.stack([i[0] for i in batch], dim=0)
+        videos = None
+        captions = [i[1] for i in batch]
+    else:
+        images = torch.stack([i[0] for i in batch], dim=0)
+        videos = torch.stack([i[1] for i in batch], dim=0)
+        captions = [i[2] for i in batch]
+    return [images, videos, captions]
+
+
 def get_dataloader(args):
-    if args.webdataset:
+    if args.dataset == "first_stage":
         dataset = wds.WebDataset(args.dataset_path, resampled=True, handler=warn_and_continue).decode(wds.torch_video,
-                    handler=warn_and_continue).map(ProcessData(clip_len=args.clip_len, skip_frames=args.skip_frames),
+                    handler=warn_and_continue).map(ProcessVideos(clip_len=args.clip_len, skip_frames=args.skip_frames),
                     handler=warn_and_continue).to_tuple("image", "video", handler=warn_and_continue).shuffle(690, handler=warn_and_continue)
-        dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, collate_fn=collate)  # TODO: num_workers=args.num_workers
+        dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, collate_fn=collate_first_stage)  # TODO: num_workers=args.num_workers
+
+    elif args.dataset == "second_stage":
+        dataset = MixImageVideoDataset(args)
+        dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_second_stage)  # TODO: num_workers=args.num_workers
+
     else:
         dataset = VideoDataset(video_transform=transforms)
         dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers)  # TODO: add num_workers=args.num_workers
     return dataloader
 
 
-class ProcessData:
+class ProcessImages:
+    def __init__(self,):
+        self.transforms = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Resize(128),
+            torchvision.transforms.RandomCrop(128),
+        ])
+
+    def __call__(self, data):
+        data["jpg"] = self.transforms(data["jpg"])
+        return data
+
+
+class ProcessVideos:
     def __init__(self, clip_len=10, skip_frames=4):
         self.video_transform = torchvision.transforms.Compose([
             torchvision.transforms.Resize(128),
-            torchvision.transforms.CenterCrop(128)
+            torchvision.transforms.RandomCrop(128)
         ])
         self.clip_len = clip_len
         self.skip_frames = skip_frames
@@ -87,11 +117,40 @@ class ProcessData:
         return data
 
 
+class MixImageVideoDataset(IterableDataset):
+    def __init__(self, args):
+        super().__init__()
+        self.video_dataset, self.image_dataset = self.init_dataloaders(args)
+
+    def init_dataloaders(self, args):
+        video_dataset = wds.WebDataset(args.urls["videos"], resampled=True, handler=warn_and_continue).decode(wds.torch_video,
+                    handler=warn_and_continue).map(ProcessVideos(clip_len=args.clip_len, skip_frames=args.skip_frames),
+                    handler=warn_and_continue).to_tuple("image", "video", "txt", handler=warn_and_continue).shuffle(690, handler=warn_and_continue)
+        # image_dataset = wds.WebDataset(args.urls["images"], resampled=True, handler=warn_and_continue).decode("rgb").map(
+        #     ProcessImages(), handler=warn_and_continue).to_tuple("jpg", "txt", handler=warn_and_continue).shuffle(6969, initial=10000)
+        image_dataset = None
+        return video_dataset, image_dataset
+
+    def __iter__(self):
+        # sources = [iter(self.video_dataset), iter(self.image_dataset)]
+        sources = [iter(self.video_dataset)]
+        while True:
+            for source in sources:
+                try:
+                    yield next(source)
+                except StopIteration:
+                    return
+
 # video_path = "./videos/test.mp4"
 # video, _, _ = torchvision.io.read_video(video_path)
 # video = video.permute(0, 3, 2, 1) / 255.
 # video = transforms(video)
+
+
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    args = parser.parse_args()
     # d = VideoDataset(video_transform=transforms)
     # sample_vid = d[0]
     # print(sample_vid.shape)
@@ -106,10 +165,19 @@ if __name__ == '__main__':
     #
     # plt.show()
 
-    dataset = wds.WebDataset("./data/6.tar", resampled=True).decode(wds.torch_video,
-        ).map(ProcessData()).to_tuple("image", "video",
-        ).shuffle(690)
-    dataloader = DataLoader(dataset, batch_size=1, collate_fn=collate)
+    # dataset = wds.WebDataset("./data/6.tar", resampled=True).decode(wds.torch_video,
+    #     ).map(ProcessVideos()).to_tuple("image", "video",
+    #     ).shuffle(690)
+    # dataloader = DataLoader(dataset, batch_size=1, collate_fn=collate_first_stage)
+
+    args.batch_size = 1
+    args.clip_len = 10
+    args.skip_frames = 3
+    # args.urls = {"videos": "file:./data/6.tar"}
+    args.urls = {"videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar"}
+
+    dataset = MixImageVideoDataset(args)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_second_stage)
 
     for sample in dataloader:
         break

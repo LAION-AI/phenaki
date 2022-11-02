@@ -39,9 +39,9 @@ def train(proc_id, args):
         torch.set_num_threads(6)
 
     if args.model == "vivit":
-        model = VIVIT(latent_size=16, compressed_frames=5, patch_size=(2, 8, 8)).to(device)
+        model = VIVIT(latent_size=16, compressed_frames=5, patch_size=(2, 8, 8), codebook_size=args.codebook_size).to(device)
     elif args.model == "vivq":
-        model = VIVQ().to(device)
+        model = VIVQ(codebook_size=args.codebook_size).to(device)
     else:
         raise NotImplementedError()
 
@@ -160,7 +160,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "vivq_2"
+    args.run_name = "vivq_8192_5_skipframes"
     args.model = "vivq"
     args.webdataset = True
     # args.dataset_path = "file:./data/6.tar"
@@ -172,8 +172,9 @@ if __name__ == '__main__':
     args.extra_ckpt = 10_000
     args.accum_grad = 1
 
+    args.codebook_size = 8192
     args.clip_len = 10
-    args.skip_frames = 3
+    args.skip_frames = 5
 
     args.n_nodes = 1
     args.node_id = int(os.environ["SLURM_PROCID"])

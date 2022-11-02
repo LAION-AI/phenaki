@@ -206,9 +206,11 @@ class MaskGit(nn.Module):
 
     def loss(self, pred, video_indices, mask):
         acc = (pred.permute(0, 2, 1).argmax(1) == video_indices).float().mean()
-        video_indices = video_indices[mask]  # 839
-        mask = mask.flatten()  # 1536
-        pred = pred.view(-1, pred.shape[-1])[mask]  # 839x1024
+        # video_indices = video_indices[mask]  # 839
+        video_indices = video_indices.flatten()
+        # mask = mask.flatten()  # 1536
+        # pred = pred.view(-1, pred.shape[-1])[mask]  # 839x1024
+        pred = pred.view(-1, pred.shape[-1])  # 839x1024
         return self.loss_fn(pred, video_indices), acc
 
 

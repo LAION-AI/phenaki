@@ -87,7 +87,7 @@ def train(proc_id, args):
                                 rank=proc_id + len(args.devices) * args.node_id)
         torch.set_num_threads(6)
 
-    vqmodel = VIVQ().to(device)
+    vqmodel = VIVQ(codebook_size=args.num_tokens).to(device)
     vqmodel.load_state_dict(torch.load(args.vq_path, map_location=device))
     vqmodel.vqmodule.q_step_counter += int(1e9)
     vqmodel.eval().requires_grad_(False)
@@ -106,8 +106,9 @@ def train(proc_id, args):
         print(f"Number of Parameters: {sum([p.numel() for p in model.parameters()])}")
 
     lr = 3e-4
-    # dataset = get_dataloader(args)
+    dataset = get_dataloader(args)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     if parallel:
         model = DistributedDataParallel(model, device_ids=[device], output_device=device)
@@ -150,17 +151,18 @@ def train(proc_id, args):
         start_step, total_loss, total_acc = 0, 0, 0
 
     model.train()
-    captions = ["I like you"]
+    # captions = ["I like you"]
     # images, videos = next(iter(dataset))
-    # pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
-    pbar = tqdm(range(1000000))
-    # for step, (images, videos, captions) in pbar:
-    for step in pbar:
-        images = torch.randn(1, 3, 128, 128)
+    pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
+    # pbar = tqdm(range(1000000))
+    for step, (images, videos, captions) in pbar:
+    # for step in pbar:
+    #     images = torch.randn(1, 3, 128, 128)
         # videos = None
-        videos = torch.randn(1, 10, 3, 128, 128)
+        # videos = torch.randn(1, 10, 3, 128, 128)
         images = images.to(device)
-        videos = videos.to(device)
+        if videos is not None:
+            videos = videos.to(device)
 
         with torch.no_grad():
             video_indices = vqmodel.encode(images, videos)[2]  # TODO: make this cleaner
@@ -171,10 +173,10 @@ def train(proc_id, args):
             if np.random.rand() < 0.1:  # 10% of the times...
                 text_embeddings = images.new_zeros(images.size(0), 1, args.dim_context)
             else:
-                # text_tokens = t5_tokenizer(captions, return_tensors="pt", padding=True, truncation=True).input_ids
-                # text_tokens = text_tokens.to(device)
-                # text_embeddings = t5_model.encoder(input_ids=text_tokens).last_hidden_state
-                text_embeddings = torch.randn(1, 10, 512).to(device)
+                text_tokens = t5_tokenizer(captions, return_tensors="pt", padding=True, truncation=True).input_ids
+                text_tokens = text_tokens.to(device)
+                text_embeddings = t5_model.encoder(input_ids=text_tokens).last_hidden_state
+                # text_embeddings = torch.randn(1, 10, 512).to(device)
 
         pred = model(noised_indices, text_embeddings)
         loss, acc = model.loss(pred, video_indices, mask)
@@ -191,7 +193,7 @@ def train(proc_id, args):
             log = {
                 'loss': loss.item(),
                 'acc': acc.item(),
-                'ppx': np.exp(loss.item() / (step + 1)),
+                'ppx': np.exp(loss.item()),
                 'lr': optimizer.param_groups[0]['lr'],
                 'gn': grad_norm
             }
@@ -239,9 +241,9 @@ def train(proc_id, args):
 
                 log_data = [
                     [captions[i]] +
-                    [wandb.Video(sampled[i].cpu().numpy())] +
-                    [wandb.Video(videos[i].cpu().numpy())] +
-                    [wandb.Video(recon_video[i].cpu().numpy())]
+                    [wandb.Video(sampled[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())] +
+                    [wandb.Video(videos[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())] +
+                    [wandb.Video(recon_video[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())]
                     for i in range(len(captions))
                 ]
             else:
@@ -258,7 +260,7 @@ def train(proc_id, args):
             log_table = wandb.Table(data=log_data, columns=["Caption", "Video", "Orig", "Recon"])
             wandb.log({"Log": log_table})
 
-            log_data_cool = [[cool_captions_text[i]] + [wandb.Video(cool_captions_sampled[i].cpu().numpy())] for i in range(len(cool_captions_text))]
+            log_data_cool = [[cool_captions_text[i]] + [wandb.Video(cool_captions_sampled[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())] for i in range(len(cool_captions_text))]
             log_table_cool = wandb.Table(data=log_data_cool, columns=["Caption", "Video"])
             wandb.log({"Log Cool": log_table_cool})
 
@@ -271,7 +273,6 @@ def train(proc_id, args):
             torch.save(model.state_dict(), f"models/{args.run_name}/model.pt")
             torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
             torch.save({'step': step, 'losses': losses, 'accuracies': accuracies}, f"results/{args.run_name}/log.pt")
-
 
 
 def launch(args):
@@ -290,25 +291,25 @@ if __name__ == '__main__':
     args = parser.parse_args()
     args.run_name = "maskgit_1"
     args.model = "maskgit"
-    args.webdataset = True
-    args.dataset_path = "file:./data/6.tar"
+    args.dataset = "second_stage"
+    args.urls = {"videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar"}
     # args.dataset_path = "/fsx/mas/phenaki/data/raw_data/Moments_in_Time_Raw/tar_files/{0..363}.tar"
     args.total_steps = 5_000_000
-    args.batch_size = 10
+    args.batch_size = 1
     args.num_workers = 10
     args.log_period = 100
     args.extra_ckpt = 10_000
     args.accum_grad = 1
 
-    args.vq_path = "./models/server/vivq_2/model_110000.pt"
+    args.vq_path = "./models/server/vivq_8192_5_skipframes/model_100000.pt"
     args.dim = 128
-    args.num_tokens = 1024
+    args.num_tokens = 8192
     args.max_seq_len = 6 * 16 * 16
     args.depth = 1
     args.dim_context = 512
 
     args.clip_len = 10
-    args.skip_frames = 3
+    args.skip_frames = 5
 
     args.n_nodes = 1
     # args.node_id = int(os.environ["SLURM_PROCID"])
