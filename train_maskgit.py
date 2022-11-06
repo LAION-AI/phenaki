@@ -96,7 +96,7 @@ def train(proc_id, args):
     t5_model = T5Model.from_pretrained("t5-small").to(device).requires_grad_(False)
 
     if args.model == "maskgit":
-        model = MaskGit(dim=args.dim, num_tokens=args.num_tokens, max_seq_len=args.max_seq_len, depth=args.depth, dim_context=args.dim_context).to(device)
+        model = MaskGit(dim=args.dim, num_tokens=args.num_tokens, max_seq_len=args.max_seq_len, depth=args.depth, dim_context=args.dim_context, heads=args.heads).to(device)
     elif args.model == "":
         model = None.to(device)
     else:
@@ -108,7 +108,6 @@ def train(proc_id, args):
     lr = 3e-4
     dataset = get_dataloader(args)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     if parallel:
         model = DistributedDataParallel(model, device_ids=[device], output_device=device)
@@ -236,7 +235,7 @@ def train(proc_id, args):
             video_indices = video_indices[:6]
             if videos is not None:
                 videos = videos[:6]
-                videos = torch.cat([images.unsqueeze(0), videos], dim=1)
+                videos = torch.cat([images.unsqueeze(1), videos], dim=1)
                 recon_video = vqmodel.decode_indices(video_indices, BASE_SHAPE)
 
                 log_data = [
@@ -247,7 +246,7 @@ def train(proc_id, args):
                     for i in range(len(captions))
                 ]
             else:
-                videos = images.unsqueeze(0)
+                videos = images.unsqueeze(1)
                 recon_video = vqmodel.decode_indices(video_indices, (1, 16, 16))
                 log_data = [
                     [captions[i]] +
@@ -292,21 +291,25 @@ if __name__ == '__main__':
     args.run_name = "maskgit_1"
     args.model = "maskgit"
     args.dataset = "second_stage"
-    args.urls = {"videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar"}
-    # args.dataset_path = "/fsx/mas/phenaki/data/raw_data/Moments_in_Time_Raw/tar_files/{0..363}.tar"
+    args.urls = {
+        "videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar",
+        "images": "file:C:/Users/d6582/Documents/ml/paella/paella_unet/000069.tar"
+        # "images": "pipe:aws s3 cp s3://s-laion/improved-aesthetics-laion-2B-en-subsets/aesthetics_tars/{000000..060207}.tar -"
+    }
     args.total_steps = 5_000_000
-    args.batch_size = 1
+    args.batch_size = 2
     args.num_workers = 10
     args.log_period = 100
     args.extra_ckpt = 10_000
     args.accum_grad = 1
 
     args.vq_path = "./models/server/vivq_8192_5_skipframes/model_100000.pt"
-    args.dim = 128
+    args.dim = 128  # 1224
     args.num_tokens = 8192
     args.max_seq_len = 6 * 16 * 16
-    args.depth = 1
+    args.depth = 1  # 22
     args.dim_context = 512
+    args.heads = 8  # 22
 
     args.clip_len = 10
     args.skip_frames = 5

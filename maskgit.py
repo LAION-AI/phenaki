@@ -325,9 +325,9 @@ class Phenaki(nn.Module):
 
 
 if __name__ == '__main__':
-    # m = MaskGit(dim=128, num_tokens=1024, max_seq_len=1536, depth=6)  # 6 x 16 x 16
-    m = MaskGit(dim=128, num_tokens=1024, max_seq_len=1536, depth=6, dim_context=768)  # 6 x 16 x 16
+    # m = MaskGit(dim=2048, num_tokens=1024, max_seq_len=1536, depth=32, dim_context=512, heads=32)  # paper version
+    m = MaskGit(dim=1224, num_tokens=8192, max_seq_len=1536, depth=22, dim_context=512, heads=22)  # 6 x 16 x 16
     print(sum([p.numel() for p in m.parameters()]))
-    x = torch.randint(low=0, high=1024, size=(6, 16, 16)).view(1, -1)
-    text_cond = torch.randn(1, 10, 768)
+    x = torch.randint(low=0, high=8192, size=(6, 16, 16)).view(1, -1)
+    text_cond = torch.randn(1, 10, 512)
     print(m(x, text_cond).shape)

@@ -1,6 +1,7 @@
 import math
 import os
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torchvision.utils as vutils
 import wandb
@@ -98,7 +99,10 @@ def train(proc_id, args):
     for step, (images, videos) in pbar:
     # for step in pbar:
         images = images.to(device)
-        videos = videos.to(device)
+        if np.random.random() < 0.2:
+            videos = None
+        else:
+            videos = videos.to(device)
 
         recon, vq_loss = model(images, videos)
         loss, d_loss = criterion(images, videos, recon, vq_loss, step)
@@ -160,9 +164,9 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "vivq_8192_5_skipframes"
+    args.run_name = "vivq_8192_drop_video"
     args.model = "vivq"
-    args.webdataset = True
+    args.dataset = "first_stage"
     # args.dataset_path = "file:./data/6.tar"
     args.dataset_path = "/fsx/mas/phenaki/data/raw_data/Moments_in_Time_Raw/tar_files/{0..363}.tar"
     args.total_steps = 5_000_000

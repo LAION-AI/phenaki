@@ -120,26 +120,28 @@ class ProcessVideos:
 class MixImageVideoDataset(IterableDataset):
     def __init__(self, args):
         super().__init__()
+        self.batch_size = args.batch_size  # TODO: split this into image bs and video bs
         self.video_dataset, self.image_dataset = self.init_dataloaders(args)
 
     def init_dataloaders(self, args):
         video_dataset = wds.WebDataset(args.urls["videos"], resampled=True, handler=warn_and_continue).decode(wds.torch_video,
                     handler=warn_and_continue).map(ProcessVideos(clip_len=args.clip_len, skip_frames=args.skip_frames),
                     handler=warn_and_continue).to_tuple("image", "video", "txt", handler=warn_and_continue).shuffle(690, handler=warn_and_continue)
-        # image_dataset = wds.WebDataset(args.urls["images"], resampled=True, handler=warn_and_continue).decode("rgb").map(
-        #     ProcessImages(), handler=warn_and_continue).to_tuple("jpg", "txt", handler=warn_and_continue).shuffle(6969, initial=10000)
-        image_dataset = None
+        image_dataset = wds.WebDataset(args.urls["images"], resampled=True, handler=warn_and_continue).decode("rgb").map(
+            ProcessImages(), handler=warn_and_continue).to_tuple("jpg", "txt", handler=warn_and_continue).shuffle(6969, initial=10000)
         return video_dataset, image_dataset
 
     def __iter__(self):
+        sources = [iter(self.image_dataset), iter(self.video_dataset)]
         # sources = [iter(self.video_dataset), iter(self.image_dataset)]
-        sources = [iter(self.video_dataset)]
+        # sources = [iter(self.video_dataset)]
         while True:
             for source in sources:
-                try:
-                    yield next(source)
-                except StopIteration:
-                    return
+                for _ in range(self.batch_size):
+                    try:
+                        yield next(source)
+                    except StopIteration:
+                        return
 
 # video_path = "./videos/test.mp4"
 # video, _, _ = torchvision.io.read_video(video_path)
@@ -174,8 +176,10 @@ if __name__ == '__main__':
     args.clip_len = 10
     args.skip_frames = 3
     # args.urls = {"videos": "file:./data/6.tar"}
-    args.urls = {"videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar"}
-
+    args.urls = {
+        "videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar",
+        "images": "file:C:/Users/d6582/Documents/ml/paella/paella_unet/000069.tar"
+    }
     dataset = MixImageVideoDataset(args)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_second_stage)
 

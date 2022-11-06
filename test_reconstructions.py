@@ -28,12 +28,13 @@ def load_video(path, clip_len=10, skip_frames=3):
 path = r"C:\Users\d6582\Documents\ml\phenaki\data\webvid\example_videos\1066656142.mp4"
 name = "vivq_2"
 device = "cuda"
-num_frames = 10
-skip_frames = 1
+num_frames = 50
+skip_frames = 5
 c_hidden = 512
 
-ckpt_path = "./models/server/vivq_2/model_110000.pt"
-model = VIVQ(c_hidden=c_hidden).to(device)
+# ckpt_path = "./models/server/vivq_8192_drop_video/model_80000.pt"
+ckpt_path = "./models/server/vivq_8192_5_skipframes/model_100000.pt"
+model = VIVQ(c_hidden=c_hidden, codebook_size=8192).to(device)
 state_dict = torch.load(ckpt_path)
 model.load_state_dict(state_dict)
 model.eval().requires_grad_(False)
@@ -46,15 +47,24 @@ else:
 
 image, video = image.to(device), video.to(device)
 
+# video = None
+
 reconstruction, _ = model(image, video)
 
-orig = torch.cat([image.unsqueeze(1), video], dim=1)
-orig = orig[0]
-recon = reconstruction[0]
-print(f"results/{name}_{num_frames}.mp4")
-torchvision.io.write_video(f"results/{name}_{num_frames}_.mp4", (recon * 255).cpu().permute(0, 2, 3, 1), fps=5)
-torchvision.io.write_video(f"results/{num_frames}_orig_.mp4", (orig * 255).cpu().permute(0, 2, 3, 1), fps=5)
-comp = vutils.make_grid(torch.cat([orig, recon]), nrow=len(orig)).detach().cpu()
+if video is None:
+    orig = image
+    # orig = orig[0]
+    recon = reconstruction[0]
+    print(f"results/{name}_{num_frames}.mp4")
+    comp = vutils.make_grid(torch.cat([orig, recon]), nrow=len(orig)).detach().cpu()
+else:
+    orig = torch.cat([image.unsqueeze(1), video], dim=1)
+    orig = orig[0]
+    recon = reconstruction[0]
+    print(f"results/{name}_{num_frames}.mp4")
+    # torchvision.io.write_video(f"results/{name}_{num_frames}_.mp4", (recon * 255).cpu().permute(0, 2, 3, 1), fps=5)
+    # torchvision.io.write_video(f"results/{num_frames}_orig_.mp4", (orig * 255).cpu().permute(0, 2, 3, 1), fps=5)
+    comp = vutils.make_grid(torch.cat([orig, recon]), nrow=len(orig)).detach().cpu()
 plt.imshow(comp.permute(1, 2, 0))
 plt.show()
 

@@ -171,20 +171,20 @@ class VQModule(nn.Module):
 
     def forward(self, x, dim=-1):
         if self.training:
-            self.q_step_counter += x.size(0)
-            x_flat = x.permute(0, 2, 3, 1).reshape(-1, x.size(1))
-            self.reservoir = x_flat if self.reservoir is None else torch.cat([self.reservoir, x_flat], dim=0)
-            self.reservoir = self.reservoir[torch.randperm(self.reservoir.size(0))[:self.reservoir_size]].detach()
-            if self.q_step_counter < self.q_init:
-                qe, commit_loss, indices = x, x.new_tensor(0), None
-            else:
+            # self.q_step_counter += x.size(0)
+            # x_flat = x.permute(0, 2, 3, 1).reshape(-1, x.size(1))
+            # self.reservoir = x_flat if self.reservoir is None else torch.cat([self.reservoir, x_flat], dim=0)
+            # self.reservoir = self.reservoir[torch.randperm(self.reservoir.size(0))[:self.reservoir_size]].detach()
+            # if self.q_step_counter < self.q_init:
+            #     qe, commit_loss, indices = x, x.new_tensor(0), None
+            # else:
                 # if self.q_step_counter < self.q_init + self.q_refresh_end:
                 #     if (self.q_step_counter + self.q_init) % self.q_refresh_step == 0 or self.q_step_counter == self.q_init or self.q_step_counter == self.q_init + self.q_refresh_end - 1:
                 #         print("Running KMeans")
                 #         kmeans = KMeans(n_clusters=self.codebook_size, mode='euclidean', verbose=0)
                 #         kmeans.fit_predict(self.reservoir)
                 #         self.vquantizer.codebook.weight.data = kmeans.centroids.detach()
-                qe, (_, commit_loss), indices = self.vquantizer(x, dim=dim)
+            qe, (_, commit_loss), indices = self.vquantizer(x, dim=dim)
         else:
             if self.q_step_counter < self.q_init:
                 qe, commit_loss, indices = x, x.new_tensor(0), None
