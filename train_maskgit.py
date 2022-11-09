@@ -1,19 +1,15 @@
 import math
 import os
 import time
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torchvision
-import torchvision.utils as vutils
 import wandb
-from torch import nn, optim
+from torch import optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from cvivit import VIVIT
 from vivq import VIVQ
 from maskgit import MaskGit, gumbel_sample
 from utils import get_dataloader
@@ -66,7 +62,7 @@ def sample(model, text_embeddings, steps=20, cond_scale=3., starting_temperature
 
 def train(proc_id, args):
     if os.path.exists(f"results/{args.run_name}/log.pt"):
-        resume = False  # TODO: change back
+        resume = True  # TODO: change back
     else:
         resume = False
     if not proc_id and args.node_id == 0:
@@ -82,7 +78,7 @@ def train(proc_id, args):
     if parallel:
         torch.cuda.set_device(proc_id)
         torch.backends.cudnn.benchmark = True
-        dist.init_process_group(backend="nccl", init_method="file:///fsx/mas/phenaki/dist_file",
+        dist.init_process_group(backend="nccl", init_method="file:///fsx/mas/phenaki/phenaki/dist_file",
                                 world_size=args.n_nodes * len(args.devices),
                                 rank=proc_id + len(args.devices) * args.node_id)
         torch.set_num_threads(6)
@@ -108,9 +104,6 @@ def train(proc_id, args):
     lr = 3e-4
     dataset = get_dataloader(args)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
-
-    if parallel:
-        model = DistributedDataParallel(model, device_ids=[device], output_device=device)
 
     if not proc_id and args.node_id == 0:
         # wandb.watch(model)
@@ -149,6 +142,9 @@ def train(proc_id, args):
         accuracies = []
         start_step, total_loss, total_acc = 0, 0, 0
 
+    if parallel:
+        model = DistributedDataParallel(model, device_ids=[device], output_device=device)
+
     model.train()
     # captions = ["I like you"]
     # images, videos = next(iter(dataset))
@@ -167,7 +163,7 @@ def train(proc_id, args):
             video_indices = vqmodel.encode(images, videos)[2]  # TODO: make this cleaner
             video_indices = video_indices.view(images.shape[0], -1)
             r = torch.rand(images.size(0), device=device)
-            noised_indices, mask = model.add_noise(video_indices, r)  # add module back
+            noised_indices, mask = model.module.add_noise(video_indices, r)  # add module back
 
             if np.random.rand() < 0.1:  # 10% of the times...
                 text_embeddings = images.new_zeros(images.size(0), 1, args.dim_context)
@@ -178,8 +174,11 @@ def train(proc_id, args):
                 # text_embeddings = torch.randn(1, 10, 512).to(device)
 
         pred = model(noised_indices, text_embeddings)
-        loss, acc = model.loss(pred, video_indices, mask)
+        loss, acc = model.module.loss(pred, video_indices, mask)
         loss_adjusted = loss / grad_accum_steps
+
+        total_loss += loss.item()
+        total_acc += acc.item()
 
         loss_adjusted.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 10).item()
@@ -190,8 +189,10 @@ def train(proc_id, args):
 
         if not proc_id and args.node_id == 0:
             log = {
-                'loss': loss.item(),
-                'acc': acc.item(),
+                'loss': total_loss / (step + 1),
+                'curr_loss': loss.item(),
+                'acc': total_acc / (step + 1),
+                'curr_acc': acc.item(),
                 'ppx': np.exp(loss.item()),
                 'lr': optimizer.param_groups[0]['lr'],
                 'gn': grad_norm
@@ -208,7 +209,7 @@ def train(proc_id, args):
                 n = 1
                 captions = captions[:6]
                 text_embeddings = text_embeddings[:6]
-                sampled = sample(model, text_embeddings)
+                sampled = sample(model.module, text_embeddings)
                 sampled = vqmodel.decode_indices(sampled)
 
                 cool_captions_data = torch.load("cool_captions.pth")
@@ -223,7 +224,7 @@ def train(proc_id, args):
                 st = time.time()
                 for caption_embedding in cool_captions:
                     caption_embedding = caption_embedding[0].float().to(device)
-                    sampled_text = sample(model, caption_embedding)
+                    sampled_text = sample(model.module, caption_embedding)
                     sampled_text = vqmodel.decode_indices(sampled_text)
                     for s in sampled_text:
                         cool_captions_sampled.append(s.cpu())
@@ -250,7 +251,7 @@ def train(proc_id, args):
                 recon_video = vqmodel.decode_indices(video_indices, (1, 16, 16))
                 log_data = [
                     [captions[i]] +
-                    [wandb.Video(sampled[i].cpu().numpy())] +
+                    [wandb.Video(sampled[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())] +
                     [wandb.Image(videos[i])] +
                     [wandb.Image(recon_video[i])]
                     for i in range(len(captions))
@@ -267,9 +268,9 @@ def train(proc_id, args):
             del noised_indices, mask, pred, loss, loss_adjusted, acc
 
             if step % args.extra_ckpt == 0:
-                torch.save(model.state_dict(), f"models/{args.run_name}/model_{step}.pt")
+                torch.save(model.module.state_dict(), f"models/{args.run_name}/model_{step}.pt")
                 torch.save(optimizer.state_dict(), f"models/{args.run_name}/model_{step}_optim.pt")
-            torch.save(model.state_dict(), f"models/{args.run_name}/model.pt")
+            torch.save(model.module.state_dict(), f"models/{args.run_name}/model.pt")
             torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
             torch.save({'step': step, 'losses': losses, 'accuracies': accuracies}, f"results/{args.run_name}/log.pt")
 
@@ -288,37 +289,38 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "maskgit_1"
+    args.run_name = "maskgit_3"
     args.model = "maskgit"
     args.dataset = "second_stage"
     args.urls = {
-        "videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar",
-        "images": "file:C:/Users/d6582/Documents/ml/paella/paella_unet/000069.tar"
-        # "images": "pipe:aws s3 cp s3://s-laion/improved-aesthetics-laion-2B-en-subsets/aesthetics_tars/{000000..060207}.tar -"
+        # "videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar",
+        "videos": "/fsx/mas/phenaki/data/webvid/tar_files/{0..249}.tar",
+        # "images": "file:C:/Users/d6582/Documents/ml/paella/paella_unet/000069.tar"
+        "images": "pipe:aws s3 cp s3://s-laion/improved-aesthetics-laion-2B-en-subsets/aesthetics_tars/{000000..060207}.tar -"
     }
-    args.total_steps = 5_000_000
+    args.total_steps = 1_000_000
     args.batch_size = 2
     args.num_workers = 10
-    args.log_period = 100
+    args.log_period = 2000
     args.extra_ckpt = 10_000
-    args.accum_grad = 1
+    args.accum_grad = 3
 
-    args.vq_path = "./models/server/vivq_8192_5_skipframes/model_100000.pt"
-    args.dim = 128  # 1224
+    args.vq_path = "/fsx/mas/phenaki/phenaki/models/vivq_8192_drop_video/model_120000.pt"  # ./models/server/vivq_8192_5_skipframes/model_100000.pt
+    args.dim = 1224  # 1224
     args.num_tokens = 8192
     args.max_seq_len = 6 * 16 * 16
-    args.depth = 1  # 22
+    args.depth = 22  # 22
     args.dim_context = 512
-    args.heads = 8  # 22
+    args.heads = 22  # 22
 
     args.clip_len = 10
     args.skip_frames = 5
 
-    args.n_nodes = 1
-    # args.node_id = int(os.environ["SLURM_PROCID"])
-    args.node_id = 0
-    # args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
-    args.devices = [0]
+    args.n_nodes = 10
+    args.node_id = int(os.environ["SLURM_PROCID"])
+    # args.node_id = 0
+    args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
+    # args.devices = [0]
 
     print("Launching with args: ", args)
     launch(

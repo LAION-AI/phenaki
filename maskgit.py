@@ -57,7 +57,7 @@ class Attention(nn.Module):
             dim_head=64,
             heads=8,
             causal=False,
-            num_null_kv=0
+            num_null_kv=2
     ):
         super().__init__()
         self.heads = heads
@@ -206,11 +206,11 @@ class MaskGit(nn.Module):
 
     def loss(self, pred, video_indices, mask):
         acc = (pred.permute(0, 2, 1).argmax(1) == video_indices).float().mean()
-        # video_indices = video_indices[mask]  # 839
-        video_indices = video_indices.flatten()
-        # mask = mask.flatten()  # 1536
-        # pred = pred.view(-1, pred.shape[-1])[mask]  # 839x1024
-        pred = pred.view(-1, pred.shape[-1])  # 839x1024
+        video_indices = video_indices[mask]  # 839
+        # video_indices = video_indices.flatten()
+        mask = mask.flatten()  # 1536
+        pred = pred.view(-1, pred.shape[-1])[mask]  # 839x1024
+        # pred = pred.view(-1, pred.shape[-1])  # 839x1024
         return self.loss_fn(pred, video_indices), acc
 
 
@@ -327,7 +327,10 @@ class Phenaki(nn.Module):
 if __name__ == '__main__':
     # m = MaskGit(dim=2048, num_tokens=1024, max_seq_len=1536, depth=32, dim_context=512, heads=32)  # paper version
     m = MaskGit(dim=1224, num_tokens=8192, max_seq_len=1536, depth=22, dim_context=512, heads=22)  # 6 x 16 x 16
-    print(sum([p.numel() for p in m.parameters()]))
-    x = torch.randint(low=0, high=8192, size=(6, 16, 16)).view(1, -1)
-    text_cond = torch.randn(1, 10, 512)
-    print(m(x, text_cond).shape)
+    # print(sum([p.numel() for p in m.parameters()]))
+    for name, p in m.named_parameters():
+        print(name)
+        print(p.shape)
+    # x = torch.randint(low=0, high=8192, size=(6, 16, 16)).view(1, -1)
+    # text_cond = torch.randn(1, 10, 512)
+    # print(m(x, text_cond).shape)
