@@ -1,10 +1,102 @@
 import math
-import random
 import torch
+import random
+import numpy as np
 import torchvision
 from torch.utils.data import Dataset, DataLoader, IterableDataset
 import webdataset as wds
 from webdataset.handlers import warn_and_continue
+from maskgit import gumbel_sample
+from einops import rearrange
+
+
+@torch.no_grad()
+def sample_maskgit(model, text_embeddings, steps=20, cond_scale=3., starting_temperature=0.9, base_shape=(6, 16, 16)):
+    device = next(model.parameters()).device
+    num_tokens = np.prod(base_shape)
+
+    shape = (text_embeddings.shape[0], num_tokens)
+
+    video_token_ids = torch.full(shape, model.mask_id, device=device)
+    mask = torch.ones(shape, device=device, dtype=torch.bool)
+    timesteps = torch.linspace(0, 1, steps+1)[:-1]
+
+    for step in range(steps):
+        is_first_step = step == 0
+        is_last_step = step == (steps - 1)
+
+        steps_til_x0 = steps - step
+
+        if not is_first_step:
+            num_tokens_mask = int(num_tokens * model.gamma(timesteps[step]))
+
+            _, indices = scores.topk(num_tokens_mask, dim=-1)
+            mask = torch.zeros(shape, device=device).scatter(1, indices, 1).bool()
+
+        video_token_ids = torch.where(mask, model.mask_id, video_token_ids)
+
+        logits = model(video_token_ids, text_embeddings)
+
+        temperature = starting_temperature * (step / steps_til_x0)
+        pred_video_ids = gumbel_sample(logits, temperature=temperature)
+
+        video_token_ids = torch.where(mask, pred_video_ids, video_token_ids)
+
+        if not is_last_step:
+            scores = logits.gather(2, rearrange(pred_video_ids, '... -> ... 1'))
+            scores = 1 - rearrange(scores, '... 1 -> ...')
+            scores = torch.where(mask, scores, -1e4)
+    return video_token_ids.view(-1, *base_shape)
+
+
+def sample_paella(model, c, x=None, mask=None, T=12, size=(6, 16, 16), starting_t=0, temp_range=[1.0, 1.0], typical_filtering=True, typical_mass=0.2, typical_min_tokens=1, classifier_free_scale=-1, renoise_steps=11, renoise_mode='start'):
+    with torch.inference_mode():
+        r_range = torch.linspace(0, 1, T+1)[:-1][:, None].expand(-1, c.size(0)).to(c.device)
+        temperatures = torch.linspace(temp_range[0], temp_range[1], T)
+        if x is None:
+            x = torch.randint(0, model.num_labels, size=(c.size(0), *size), device=c.device)
+        elif mask is not None:
+            noise = torch.randint(0, model.num_labels, size=(c.size(0), *size), device=c.device)
+            x = noise * mask + (1-mask) * x
+        init_x = x.clone()
+        for i in range(starting_t, T):
+            if renoise_mode == 'prev':
+                prev_x = x.clone()
+            r, temp = r_range[i], temperatures[i]
+            logits = model(x, c, r)
+            if classifier_free_scale >= 0:
+                logits_uncond = model(x, torch.zeros_like(c), r)
+                logits = torch.lerp(logits_uncond, logits, classifier_free_scale)
+            x = logits
+            x_flat = x.permute(0, 2, 3, 4, 1).reshape(-1, x.size(1))
+            if typical_filtering:
+                x_flat_norm = torch.nn.functional.log_softmax(x_flat, dim=-1)
+                x_flat_norm_p = torch.exp(x_flat_norm)
+                entropy = -(x_flat_norm * x_flat_norm_p).nansum(-1, keepdim=True)
+
+                c_flat_shifted = torch.abs((-x_flat_norm) - entropy)
+                c_flat_sorted, x_flat_indices = torch.sort(c_flat_shifted, descending=False)
+                x_flat_cumsum = x_flat.gather(-1, x_flat_indices).softmax(dim=-1).cumsum(dim=-1)
+
+                last_ind = (x_flat_cumsum < typical_mass).sum(dim=-1)
+                sorted_indices_to_remove = c_flat_sorted > c_flat_sorted.gather(1, last_ind.view(-1, 1))
+                if typical_min_tokens > 1:
+                    sorted_indices_to_remove[..., :typical_min_tokens] = 0
+                indices_to_remove = sorted_indices_to_remove.scatter(1, x_flat_indices, sorted_indices_to_remove)
+                x_flat = x_flat.masked_fill(indices_to_remove, -float("Inf"))
+            # x_flat = torch.multinomial(x_flat.div(temp).softmax(-1), num_samples=1)[:, 0]
+            x_flat = gumbel_sample(x_flat, temperature=temp)
+            x = x_flat.view(x.size(0), *x.shape[2:])
+            if mask is not None:
+                x = x * mask + (1-mask) * init_x
+            if i < renoise_steps:
+                if renoise_mode == 'start':
+                    x, _ = model.add_noise(x, r_range[i+1], random_x=init_x)
+                elif renoise_mode == 'prev':
+                    x, _ = model.add_noise(x, r_range[i+1], random_x=prev_x)
+                else:  # 'rand'
+                    x, _ = model.add_noise(x, r_range[i+1])
+    return x.detach()
 
 
 class VideoDataset(Dataset):

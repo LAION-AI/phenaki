@@ -1,4 +1,3 @@
-import math
 import os
 import time
 import numpy as np
@@ -10,59 +9,18 @@ from tqdm import tqdm
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from vivq import VIVQ
-from maskgit import MaskGit, gumbel_sample
-from utils import get_dataloader
-from transformers import T5Tokenizer, T5Model
-from einops import rearrange
-
-BASE_SHAPE = (6, 16, 16)
-
-
-@torch.no_grad()
-def sample(model, text_embeddings, steps=20, cond_scale=3., starting_temperature=0.9, base_shape=(6, 16, 16)):
-    if base_shape is None:
-        base_shape = BASE_SHAPE
-    device = next(model.parameters()).device
-    num_tokens = np.prod(base_shape)
-
-    shape = (text_embeddings.shape[0], num_tokens)
-
-    video_token_ids = torch.full(shape, model.mask_id, device=device)
-    mask = torch.ones(shape, device=device, dtype=torch.bool)
-    timesteps = torch.linspace(0, 1, steps+1)[:-1]
-
-    for step in range(steps):
-        is_first_step = step == 0
-        is_last_step = step == (steps - 1)
-
-        steps_til_x0 = steps - step
-
-        if not is_first_step:
-            num_tokens_mask = int(num_tokens * model.gamma(timesteps[step]))
-
-            _, indices = scores.topk(num_tokens_mask, dim=-1)
-            mask = torch.zeros(shape, device=device).scatter(1, indices, 1).bool()
-
-        video_token_ids = torch.where(mask, model.mask_id, video_token_ids)
-
-        logits = model(video_token_ids, text_embeddings)
-
-        temperature = starting_temperature * (step / steps_til_x0)
-        pred_video_ids = gumbel_sample(logits, temperature=temperature)
-
-        video_token_ids = torch.where(mask, pred_video_ids, video_token_ids)
-
-        if not is_last_step:
-            scores = logits.gather(2, rearrange(pred_video_ids, '... -> ... 1'))
-            scores = 1 - rearrange(scores, '... 1 -> ...')
-            scores = torch.where(mask, scores, -1e4)
-    return video_token_ids.view(-1, *base_shape)
+from vivq import VIVQ, BASE_SHAPE
+from maskgit import MaskGit
+from paella import DenoiseUNet
+from utils import get_dataloader, sample_paella, sample_maskgit
+# from transformers import T5Tokenizer, T5Model
+import open_clip
+from open_clip import tokenizer
 
 
 def train(proc_id, args):
     if os.path.exists(f"results/{args.run_name}/log.pt"):
-        resume = True  # TODO: change back
+        resume = True
     else:
         resume = False
     if not proc_id and args.node_id == 0:
@@ -88,13 +46,17 @@ def train(proc_id, args):
     vqmodel.vqmodule.q_step_counter += int(1e9)
     vqmodel.eval().requires_grad_(False)
 
-    t5_tokenizer = T5Tokenizer.from_pretrained("t5-small")  # change with "t5-b3" for the 10GB model LoL
-    t5_model = T5Model.from_pretrained("t5-small").to(device).requires_grad_(False)
+    # t5_tokenizer = T5Tokenizer.from_pretrained("t5-small")  # change with "t5-b3" for the 10GB model LoL
+    # t5_model = T5Model.from_pretrained("t5-small").to(device).requires_grad_(False)
+
+    clip_model, _, _ = open_clip.create_model_and_transforms('ViT-H-14', pretrained='laion2b_s32b_b79k', cache_dir="/fsx/mas/.cache")
+    del clip_model.visual
+    clip_model = clip_model.to(device).eval().requires_grad_(False)
 
     if args.model == "maskgit":
         model = MaskGit(dim=args.dim, num_tokens=args.num_tokens, max_seq_len=args.max_seq_len, depth=args.depth, dim_context=args.dim_context, heads=args.heads).to(device)
-    elif args.model == "":
-        model = None.to(device)
+    elif args.model == "paella":
+        model = DenoiseUNet(num_labels=args.num_tokens, down_levels=[4, 6, 8], up_levels=[8, 6, 4], c_clip=args.dim_context).to(device)
     else:
         raise NotImplementedError()
 
@@ -111,10 +73,8 @@ def train(proc_id, args):
         os.makedirs(f"models/{args.run_name}", exist_ok=True)
 
     grad_accum_steps = args.accum_grad
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr,
-                                              steps_per_epoch=math.ceil(1000 / grad_accum_steps),
-                                              epochs=300, pct_start=30 / 300, div_factor=25,
-                                              final_div_factor=1 / 25, anneal_strategy='linear')
+    # scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=args.total_steps, pct_start=0.1, div_factor=25, anneal_strategy='cos')
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=args.total_steps, pct_start=0.1, div_factor=25, final_div_factor=1 / 25, anneal_strategy='linear')
 
     if resume:
         if not proc_id and args.node_id == 0:
@@ -146,7 +106,6 @@ def train(proc_id, args):
         model = DistributedDataParallel(model, device_ids=[device], output_device=device)
 
     model.train()
-    # captions = ["I like you"]
     # images, videos = next(iter(dataset))
     pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
     # pbar = tqdm(range(1000000))
@@ -161,27 +120,32 @@ def train(proc_id, args):
 
         with torch.no_grad():
             video_indices = vqmodel.encode(images, videos)[2]  # TODO: make this cleaner
-            video_indices = video_indices.view(images.shape[0], -1)
             r = torch.rand(images.size(0), device=device)
             noised_indices, mask = model.module.add_noise(video_indices, r)  # add module back
 
             if np.random.rand() < 0.1:  # 10% of the times...
-                text_embeddings = images.new_zeros(images.size(0), 1, args.dim_context)
+                # text_embeddings = images.new_zeros(images.size(0), 1, args.dim_context)
+                text_embeddings = images.new_zeros(images.size(0), args.dim_context)
             else:
-                text_tokens = t5_tokenizer(captions, return_tensors="pt", padding=True, truncation=True).input_ids
-                text_tokens = text_tokens.to(device)
-                text_embeddings = t5_model.encoder(input_ids=text_tokens).last_hidden_state
-                # text_embeddings = torch.randn(1, 10, 512).to(device)
+                # text_tokens = t5_tokenizer(captions, return_tensors="pt", padding=True, truncation=True).input_ids
+                # text_tokens = text_tokens.to(device)
+                # text_embeddings = t5_model.encoder(input_ids=text_tokens).last_hidden_state
 
-        pred = model(noised_indices, text_embeddings)
-        loss, acc = model.module.loss(pred, video_indices, mask)
+                text_tokens = tokenizer.tokenize(captions)
+                text_tokens = text_tokens.to(device)
+                text_embeddings = clip_model.encode_text(text_tokens).float()
+
+                # text_embeddings = torch.randn(1, 768).to(device)
+
+        pred = model(noised_indices, text_embeddings, r)
+        loss, acc = model.module.loss(pred, video_indices)
         loss_adjusted = loss / grad_accum_steps
 
         total_loss += loss.item()
         total_acc += acc.item()
 
         loss_adjusted.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 10).item()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5).item()
         if (step + 1) % grad_accum_steps == 0:
             optimizer.step()
             scheduler.step()
@@ -209,22 +173,26 @@ def train(proc_id, args):
                 n = 1
                 captions = captions[:6]
                 text_embeddings = text_embeddings[:6]
-                sampled = sample(model.module, text_embeddings)
+                sampled = sample_paella(model.module, text_embeddings)
                 sampled = vqmodel.decode_indices(sampled)
 
                 cool_captions_data = torch.load("cool_captions.pth")
                 cool_captions_text = cool_captions_data["captions"]
 
-                text_tokens = t5_tokenizer(cool_captions_text, return_tensors="pt", padding=True, truncation=True).input_ids
+                # text_tokens = t5_tokenizer(cool_captions_text, return_tensors="pt", padding=True, truncation=True).input_ids
+                # text_tokens = text_tokens.to(device)
+                # cool_captions_embeddings = t5_model.encoder(input_ids=text_tokens).last_hidden_state
+
+                text_tokens = tokenizer.tokenize(cool_captions_text)
                 text_tokens = text_tokens.to(device)
-                cool_captions_embeddings = t5_model.encoder(input_ids=text_tokens).last_hidden_state
+                cool_captions_embeddings = clip_model.encode_text(text_tokens).float()
 
                 cool_captions = DataLoader(TensorDataset(cool_captions_embeddings.repeat_interleave(n, dim=0)), batch_size=1)
                 cool_captions_sampled = []
                 st = time.time()
                 for caption_embedding in cool_captions:
                     caption_embedding = caption_embedding[0].float().to(device)
-                    sampled_text = sample(model.module, caption_embedding)
+                    sampled_text = sample_paella(model.module, caption_embedding)
                     sampled_text = vqmodel.decode_indices(sampled_text)
                     for s in sampled_text:
                         cool_captions_sampled.append(s.cpu())
@@ -289,34 +257,36 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "maskgit_3"
-    args.model = "maskgit"
+    args.run_name = "Paella_Test_2"
+    args.model = "paella"
     args.dataset = "second_stage"
     args.urls = {
         # "videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar",
         "videos": "/fsx/mas/phenaki/data/webvid/tar_files/{0..249}.tar",
-        # "images": "file:C:/Users/d6582/Documents/ml/paella/paella_unet/000069.tar"
+        # "images": "file:C:/Users/d6582/Documents/ml/paella/evaluations/laion-30k/000069.tar"
         "images": "pipe:aws s3 cp s3://s-laion/improved-aesthetics-laion-2B-en-subsets/aesthetics_tars/{000000..060207}.tar -"
     }
-    args.total_steps = 1_000_000
-    args.batch_size = 2
+    args.total_steps = 300_000
+    args.batch_size = 4
     args.num_workers = 10
     args.log_period = 2000
     args.extra_ckpt = 10_000
-    args.accum_grad = 3
+    args.accum_grad = 2
 
     args.vq_path = "/fsx/mas/phenaki/phenaki/models/vivq_8192_drop_video/model_120000.pt"  # ./models/server/vivq_8192_5_skipframes/model_100000.pt
+    # args.vq_path = "./models/server/vivq_8192_5_skipframes/model_100000.pt"
     args.dim = 1224  # 1224
     args.num_tokens = 8192
     args.max_seq_len = 6 * 16 * 16
     args.depth = 22  # 22
-    args.dim_context = 512
+    args.dim_context = 1024  # for clip, 512 for T5
     args.heads = 22  # 22
 
     args.clip_len = 10
     args.skip_frames = 5
 
-    args.n_nodes = 10
+    args.n_nodes = 8
+    # args.n_nodes = 1
     args.node_id = int(os.environ["SLURM_PROCID"])
     # args.node_id = 0
     args.devices = [0, 1, 2, 3, 4, 5, 6, 7]

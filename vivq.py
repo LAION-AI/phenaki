@@ -4,6 +4,8 @@ import numpy as np
 from fast_pytorch_kmeans import KMeans
 from torchtools.nn import VectorQuantize
 
+BASE_SHAPE = (6, 16, 16)
+
 
 class ResBlockvq(nn.Module):
     def __init__(self, c, c_hidden, c_cond=0, scaler=None, kernel_size=3):
@@ -218,6 +220,11 @@ class VIVQ(nn.Module):
         shape = x.shape
         x = x.view(*x.shape[:3], x.shape[3]*x.shape[4]).permute(0, 2, 3, 1)
         qe, commit_loss, indices = self.vqmodule(x, dim=-1)
+        # indices = indices.view(image.shape[0], -1)
+        if video is not None:
+            indices = indices.view(image.shape[0], *BASE_SHAPE)
+        else:
+            indices = indices.view(image.shape[0], *BASE_SHAPE[1:]).unsqueeze(1)
         return (x, qe), commit_loss, indices, shape
 
     def decode(self, x, shape=None):
