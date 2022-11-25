@@ -66,6 +66,7 @@ def train(proc_id, args):
     lr = 3e-4
     dataset = get_dataloader(args)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
+    grad_scaler = torch.cuda.amp.GradScaler()
 
     if not proc_id and args.node_id == 0:
         # wandb.watch(model)
@@ -137,17 +138,22 @@ def train(proc_id, args):
 
                 # text_embeddings = torch.randn(1, 768).to(device)
 
-        pred = model(noised_indices, text_embeddings, r)
-        loss, acc = model.module.loss(pred, video_indices)
-        loss_adjusted = loss / grad_accum_steps
+        with torch.cuda.amp.autocast():
+            pred = model(noised_indices, text_embeddings, r)
+            loss, acc = model.module.loss(pred, video_indices)
+            loss_adjusted = loss / grad_accum_steps
 
         total_loss += loss.item()
         total_acc += acc.item()
 
-        loss_adjusted.backward()
+        grad_scaler.scale(loss_adjusted).backward()
+        # loss_adjusted.backward()
+        grad_scaler.unscale_(optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5).item()
         if (step + 1) % grad_accum_steps == 0:
-            optimizer.step()
+            # optimizer.step()
+            grad_scaler.step(optimizer)
+            grad_scaler.update()
             scheduler.step()
             optimizer.zero_grad()
 
