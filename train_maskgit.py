@@ -268,9 +268,11 @@ if __name__ == '__main__':
     args.dataset = "second_stage"
     args.urls = {
         # "videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar",
-        "videos": "/fsx/mas/phenaki/data/webvid/tar_files/{0..249}.tar",
+        # "videos": "/fsx/mas/phenaki/data/webvid/tar_files/{0..249}.tar",
+        "videos": "/fsx/phenaki/data/videos/tar_files/{0..1243}.tar",
         # "images": "file:C:/Users/d6582/Documents/ml/paella/evaluations/laion-30k/000069.tar"
-        "images": "pipe:aws s3 cp s3://s-laion/improved-aesthetics-laion-2B-en-subsets/aesthetics_tars/{000000..060207}.tar -"
+        # "images": "pipe:aws s3 cp s3://s-laion/improved-aesthetics-laion-2B-en-subsets/aesthetics_tars/{000000..060207}.tar -"
+        "images": "/fsx/phenaki/coyo-700m/coyo-data-2/{00000..20892}.tar"
     }
     args.total_steps = 300_000
     args.batch_size = 4
@@ -279,7 +281,7 @@ if __name__ == '__main__':
     args.extra_ckpt = 10_000
     args.accum_grad = 2
 
-    args.vq_path = "/fsx/mas/phenaki/phenaki/models/vivq_8192_drop_video/model_120000.pt"  # ./models/server/vivq_8192_5_skipframes/model_100000.pt
+    args.vq_path = "/fsx/phenaki/src/models/model_120000.pt"  # ./models/server/vivq_8192_5_skipframes/model_100000.pt
     # args.vq_path = "./models/server/vivq_8192_5_skipframes/model_100000.pt"
     args.dim = 1224  # 1224
     args.num_tokens = 8192
@@ -291,7 +293,7 @@ if __name__ == '__main__':
     args.clip_len = 10
     args.skip_frames = 5
 
-    args.n_nodes = 8
+    args.n_nodes = 4
     # args.n_nodes = 1
     args.node_id = int(os.environ["SLURM_PROCID"])
     # args.node_id = 0
