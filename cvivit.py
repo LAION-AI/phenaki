@@ -142,7 +142,7 @@ class VIVIT(nn.Module):
         super().__init__()
         self.encoder = Encoder(patch_size=patch_size, hidden_channels=c_hidden, size=latent_size, compressed_frames=compressed_frames,
                                num_layers=num_layers_enc, num_heads=num_heads)
-        self.cod_mapper = nn.Linear(c_hidden, c_codebook)
+        self.cod_mapper = nn.Linear(c_hidden, c_codebook, bias=False)
         self.batchnorm = nn.BatchNorm2d(c_codebook)
 
         self.cod_unmapper = nn.Linear(c_codebook, c_hidden)
