@@ -107,6 +107,7 @@ def train(proc_id, args):
         model = DistributedDataParallel(model, device_ids=[device], output_device=device)
 
     model.train()
+    print("LOL")
     # images, videos = next(iter(dataset))
     pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
     # pbar = tqdm(range(1000000))
