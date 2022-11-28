@@ -23,20 +23,13 @@ def train(proc_id, args):
         resume = True
     else:
         resume = False
-    if not proc_id and args.node_id == 0:
-        if resume:
-            wandb.init(project="Phenaki", name=args.run_name, entity="wand-tech", config=vars(args))
-        else:
-            wandb.init(project="Phenaki", name=args.run_name, entity="wand-tech", config=vars(args))
-        print(f"Starting run '{args.run_name}'....")
-        print(f"Batch Size check: {args.n_nodes * args.batch_size * args.accum_grad * len(args.devices)}")
     parallel = len(args.devices) > 1
     device = torch.device(proc_id)
 
     if parallel:
         torch.cuda.set_device(proc_id)
         torch.backends.cudnn.benchmark = True
-        dist.init_process_group(backend="nccl", init_method="file:///fsx/mas/phenaki/phenaki/dist_file",
+        dist.init_process_group(backend="nccl", init_method="file:///fsx/phenaki/src/dist_file",
                                 world_size=args.n_nodes * len(args.devices),
                                 rank=proc_id + len(args.devices) * args.node_id)
         torch.set_num_threads(6)
@@ -61,17 +54,15 @@ def train(proc_id, args):
         raise NotImplementedError()
 
     if not proc_id and args.node_id == 0:
+        print(f"Starting run '{args.run_name}'....")
+        print(f"Batch Size check: {args.n_nodes * args.batch_size * args.accum_grad * len(args.devices)}")
         print(f"Number of Parameters: {sum([p.numel() for p in model.parameters()])}")
 
     lr = 3e-4
     dataset = get_dataloader(args)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
     grad_scaler = torch.cuda.amp.GradScaler()
-
-    if not proc_id and args.node_id == 0:
-        # wandb.watch(model)
-        os.makedirs(f"results/{args.run_name}", exist_ok=True)
-        os.makedirs(f"models/{args.run_name}", exist_ok=True)
+    grad_norm = torch.tensor(0., device=device)
 
     grad_accum_steps = args.accum_grad
     # scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=args.total_steps, pct_start=0.1, div_factor=25, anneal_strategy='cos')
@@ -81,6 +72,7 @@ def train(proc_id, args):
         if not proc_id and args.node_id == 0:
             print("Loading last checkpoint....")
         logs = torch.load(f"results/{args.run_name}/log.pt")
+        run_id = logs["wandb_run_id"]
         start_step = logs["step"] + 1
         losses = logs["losses"]
         accuracies = logs["accuracies"]
@@ -99,15 +91,22 @@ def train(proc_id, args):
         optimizer.load_state_dict(opt_state)
         del opt_state
     else:
+        run_id = wandb.util.generate_id()
         losses = []
         accuracies = []
         start_step, total_loss, total_acc = 0, 0, 0
+
+    if not proc_id and args.node_id == 0:
+        wandb.init(project="DenoiseGIT", name=args.run_name, entity="wand-tech", config=vars(args), id=run_id,
+                   resume="allow")
+        os.makedirs(f"results/{args.run_name}", exist_ok=True)
+        os.makedirs(f"models/{args.run_name}", exist_ok=True)
+        wandb.watch(model)
 
     if parallel:
         model = DistributedDataParallel(model, device_ids=[device], output_device=device)
 
     model.train()
-    print("LOL")
     # images, videos = next(iter(dataset))
     pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
     # pbar = tqdm(range(1000000))
@@ -149,10 +148,11 @@ def train(proc_id, args):
 
         grad_scaler.scale(loss_adjusted).backward()
         # loss_adjusted.backward()
-        grad_scaler.unscale_(optimizer)
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5).item()
+
         if (step + 1) % grad_accum_steps == 0:
             # optimizer.step()
+            grad_scaler.unscale_(optimizer)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5).item()
             grad_scaler.step(optimizer)
             grad_scaler.update()
             scheduler.step()
@@ -245,8 +245,10 @@ def train(proc_id, args):
             if step % args.extra_ckpt == 0:
                 torch.save(model.module.state_dict(), f"models/{args.run_name}/model_{step}.pt")
                 torch.save(optimizer.state_dict(), f"models/{args.run_name}/model_{step}_optim.pt")
+                torch.save(grad_scaler.state_dict(), f"models/{args.run_name}/model_{step}_scaler.pt")
             torch.save(model.module.state_dict(), f"models/{args.run_name}/model.pt")
             torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
+            torch.save(grad_scaler.state_dict(), f"models/{args.run_name}/scaler.pt")
             torch.save({'step': step, 'losses': losses, 'accuracies': accuracies}, f"results/{args.run_name}/log.pt")
 
 
@@ -264,7 +266,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "Paella_Test_2"
+    args.run_name = "Paella_Test_4"
     args.model = "paella"
     args.dataset = "second_stage"
     args.urls = {
@@ -294,7 +296,7 @@ if __name__ == '__main__':
     args.clip_len = 10
     args.skip_frames = 5
 
-    args.n_nodes = 4
+    args.n_nodes = 3
     # args.n_nodes = 1
     args.node_id = int(os.environ["SLURM_PROCID"])
     # args.node_id = 0
