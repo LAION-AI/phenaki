@@ -249,7 +249,7 @@ def train(proc_id, args):
             torch.save(model.module.state_dict(), f"models/{args.run_name}/model.pt")
             torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
             torch.save(grad_scaler.state_dict(), f"models/{args.run_name}/scaler.pt")
-            torch.save({'step': step, 'losses': losses, 'accuracies': accuracies}, f"results/{args.run_name}/log.pt")
+            torch.save({'step': step, 'losses': losses, 'accuracies': accuracies, 'wandb_run_id': run_id}, f"results/{args.run_name}/log.pt")
 
 
 def launch(args):
