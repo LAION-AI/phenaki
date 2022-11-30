@@ -110,7 +110,7 @@ def main():
 
     if is_primary(args):
         print(f"Starting run '{args.run_name}'....")
-        print(f"Batch Size check: {args.n_nodes * args.batch_size * args.accum_grad * len(args.devices)}")
+        print(f"Batch Size check: {args.world_size * args.batch_size * args.accum_grad}")
         print(f"Number of Parameters: {sum([p.numel() for p in model.parameters()])}")
 
     lr = 3e-4
@@ -155,8 +155,8 @@ def main():
         start_step, total_loss, total_acc = 0, 0, 0
 
     if is_primary:
-        wandb.init(project="DenoiseGIT", name=args.run_name, entity="wand-tech", config=vars(args), id=run_id,
-                   resume="allow")
+        #wandb.init(project="DenoiseGIT", name=args.run_name, entity="wand-tech", config=vars(args), id=run_id,
+        #           resume="allow")
         os.makedirs(f"results/{args.run_name}", exist_ok=True)
         os.makedirs(f"models/{args.run_name}", exist_ok=True)
         wandb.watch(model)
