@@ -4,35 +4,29 @@ import numpy as np
 import torch
 import wandb
 from torch import optim
-from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-import torch.multiprocessing as mp
-import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from vivq import VIVQ, BASE_SHAPE
 from maskgit import MaskGit
 from paella import DenoiseUNet
 from utils import get_dataloader, sample_paella, sample_maskgit
+from distributed import init_distributed_device, is_primary
 # from transformers import T5Tokenizer, T5Model
 import open_clip
 from open_clip import tokenizer
 
 
-def train(proc_id, args):
+def train(args):
     if os.path.exists(f"results/{args.run_name}/log.pt"):
         resume = True
     else:
         resume = False
-    parallel = len(args.devices) > 1
-    device = torch.device(proc_id)
 
-    if parallel:
-        torch.cuda.set_device(proc_id)
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
-        dist.init_process_group(backend="nccl", init_method="file:///fsx/phenaki/src/dist_file",
-                                world_size=args.n_nodes * len(args.devices),
-                                rank=proc_id + len(args.devices) * args.node_id)
-        torch.set_num_threads(6)
+
+    device = init_distributed_device(args)
 
     vqmodel = VIVQ(codebook_size=args.num_tokens).to(device)
     vqmodel.load_state_dict(torch.load(args.vq_path, map_location=device))
@@ -53,7 +47,7 @@ def train(proc_id, args):
     else:
         raise NotImplementedError()
 
-    if not proc_id and args.node_id == 0:
+    if is_primary(args):
         print(f"Starting run '{args.run_name}'....")
         print(f"Batch Size check: {args.n_nodes * args.batch_size * args.accum_grad * len(args.devices)}")
         print(f"Number of Parameters: {sum([p.numel() for p in model.parameters()])}")
@@ -69,8 +63,6 @@ def train(proc_id, args):
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=args.total_steps, pct_start=0.1, div_factor=25, final_div_factor=1 / 25, anneal_strategy='linear')
 
     if resume:
-        if not proc_id and args.node_id == 0:
-            print("Loading last checkpoint....")
         logs = torch.load(f"results/{args.run_name}/log.pt")
         run_id = logs["wandb_run_id"]
         start_step = logs["step"] + 1
@@ -78,14 +70,13 @@ def train(proc_id, args):
         accuracies = logs["accuracies"]
         total_loss, total_acc = losses[-1] * start_step, accuracies[-1] * start_step
         model.load_state_dict(torch.load(f"models/{args.run_name}/model.pt", map_location=device))
-        if not proc_id and args.node_id == 0:
-            print("Loaded model....")
         opt_state = torch.load(f"models/{args.run_name}/optim.pt", map_location=device)
         last_lr = opt_state["param_groups"][0]["lr"]
         with torch.no_grad():
             while last_lr > optimizer.param_groups[0]["lr"]:
                 scheduler.step()
-        if not proc_id and args.node_id == 0:
+        if is_primary(args):
+            print("Loaded last checkpoint....")
             print(f"Initialized scheduler")
             print(f"Sanity check => Last-LR: {last_lr} == Current-LR: {optimizer.param_groups[0]['lr']} -> {last_lr == optimizer.param_groups[0]['lr']}")
         optimizer.load_state_dict(opt_state)
@@ -96,19 +87,21 @@ def train(proc_id, args):
         accuracies = []
         start_step, total_loss, total_acc = 0, 0, 0
 
-    if not proc_id and args.node_id == 0:
-        wandb.init(project="DenoiseGIT", name=args.run_name, entity="wand-tech", config=vars(args), id=run_id,
-                   resume="allow")
+    if is_primary(args):
+        wandb.init(project="DenoiseGIT", name=args.run_name, entity="wand-tech", config=vars(args), id=run_id, resume="allow")
         os.makedirs(f"results/{args.run_name}", exist_ok=True)
         os.makedirs(f"models/{args.run_name}", exist_ok=True)
         wandb.watch(model)
 
-    if parallel:
+    if args.distributed:
         model = DistributedDataParallel(model, device_ids=[device], output_device=device)
 
     model.train()
     # images, videos = next(iter(dataset))
-    pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step) if args.node_id == 0 and proc_id == 0 else enumerate(dataset, start=start_step)
+    if is_primary(args):
+        pbar = tqdm(enumerate(dataset, start=start_step), total=args.total_steps, initial=start_step)
+    else:
+        pbar = enumerate(dataset, start=start_step)
     # pbar = tqdm(range(1000000))
     for step, (images, videos, captions) in pbar:
     # for step in pbar:
@@ -158,7 +151,7 @@ def train(proc_id, args):
             scheduler.step()
             optimizer.zero_grad()
 
-        if not proc_id and args.node_id == 0:
+        if is_primary(args):
             log = {
                 'loss': total_loss / (step + 1),
                 'curr_loss': loss.item(),
@@ -171,33 +164,28 @@ def train(proc_id, args):
             pbar.set_postfix(log)
             wandb.log(log)
 
-        if args.node_id == 0 and proc_id == 0 and step % args.log_period == 0:
+        if is_primary(args) and step % args.log_period == 0:
             losses.append(total_loss / (step + 1))
             accuracies.append(total_acc / (step + 1))
 
             model.eval()
             with torch.no_grad():
-                n = 1
                 captions = captions[:6]
                 text_embeddings = text_embeddings[:6]
                 sampled = sample_paella(model.module, text_embeddings)
                 sampled = vqmodel.decode_indices(sampled)
 
-                cool_captions_data = torch.load("cool_captions.pth")
-                cool_captions_text = cool_captions_data["captions"]
-
                 # text_tokens = t5_tokenizer(cool_captions_text, return_tensors="pt", padding=True, truncation=True).input_ids
                 # text_tokens = text_tokens.to(device)
                 # cool_captions_embeddings = t5_model.encoder(input_ids=text_tokens).last_hidden_state
 
-                text_tokens = tokenizer.tokenize(cool_captions_text)
-                text_tokens = text_tokens.to(device)
+                cool_captions_text = open("cool_captions.txt").read().splitlines()
+                text_tokens = tokenizer.tokenize(cool_captions_text).to(device)
                 cool_captions_embeddings = clip_model.encode_text(text_tokens).float()
 
-                cool_captions = DataLoader(TensorDataset(cool_captions_embeddings.repeat_interleave(n, dim=0)), batch_size=1)
                 cool_captions_sampled = []
                 st = time.time()
-                for caption_embedding in cool_captions:
+                for caption_embedding in cool_captions_embeddings.chunk(10):
                     caption_embedding = caption_embedding[0].float().to(device)
                     sampled_text = sample_paella(model.module, caption_embedding)
                     sampled_text = vqmodel.decode_indices(sampled_text)
@@ -252,16 +240,6 @@ def train(proc_id, args):
             torch.save({'step': step, 'losses': losses, 'accuracies': accuracies, 'wandb_run_id': run_id}, f"results/{args.run_name}/log.pt")
 
 
-def launch(args):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(d) for d in args.devices])
-    if len(args.devices) == 1:
-        train(0, args)
-    else:
-        os.environ["MASTER_ADDR"] = "localhost"
-        os.environ["MASTER_PORT"] = "33751"
-        p = mp.spawn(train, nprocs=len(args.devices), args=(args,))
-
-
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
@@ -296,17 +274,12 @@ if __name__ == '__main__':
     args.clip_len = 10
     args.skip_frames = 5
 
-    args.n_nodes = 3
-    # args.n_nodes = 1
-    args.node_id = int(os.environ["SLURM_PROCID"])
-    # args.node_id = 0
-    args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
-    # args.devices = [0]
+    args.dist_url = "env://"
+    args.dist_backend = "nccl"
+    args.no_set_device_rank = False
 
     print("Launching with args: ", args)
-    launch(
-        args
-    )
+    train(args)
 
     # device = "cuda"
     # model = MaskGit(dim=args.dim, num_tokens=args.num_tokens, max_seq_len=args.max_seq_len, depth=args.depth,
