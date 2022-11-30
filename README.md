@@ -26,11 +26,11 @@ https://user-images.githubusercontent.com/61938694/197097822-fa5127d4-281d-4c78-
 - [ ] Efficient data pipeline
 - [x] Test first stage
 - [x] Small training first stage
-- [ ] Full training first stage
-- [ ] Implement MaskGIT
-- [ ] Adjust data pipeline for second stage training (include image-only training data)
-- [ ] Test second stage
-- [ ] Small training second stage
+- [X] Full training first stage
+- [X] Implement MaskGIT
+- [X] Adjust data pipeline for second stage training (include image-only training data)
+- [X] Test second stage
+- [X] Small training second stage
 - [ ] Full training second stage
 - [ ] ....
 
