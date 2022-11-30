@@ -33,6 +33,11 @@ parser.add_argument('--log-period', type=int, default=2000)
 parser.add_argument('--extra-ckpt', type=int, default=10_000)
 parser.add_argument('--accum-grad', type=int, default=2)
 
+parser.add_argument("--dist-url", default="env://", type=str, help="url used to set up distributed training")
+parser.add_argument("--dist-backend", default="nccl", type=str, help="distributed backend")
+parser.add_argument("--no-set-device-rank", default=False, action="store_true",
+                    help="Don't set device index from local rank (when CUDA_VISIBLE_DEVICES restricted to one per proc).")
+
 # args.vq_path = "./models/server/vivq_8192_5_skipframes/model_100000.pt"
 parser.add_argument('--vq-path', type=str, default='/fsx/phenaki/src/models/model_120000.pt')
 
