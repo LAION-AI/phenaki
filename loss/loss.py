@@ -17,8 +17,11 @@ class FirstStageLoss(nn.Module):
         self.lpips = lpips.LPIPS(net="vgg").to(device).requires_grad_(False)
 
     def forward(self, images, videos, reconstructions, vq_loss, step):
-        videos = torch.cat([images.unsqueeze(1), videos], dim=1).view(-1, *videos.shape[2:])
-        reconstructions = reconstructions.view(-1, *reconstructions.shape[2:])
+        if videos is not None:
+            videos = torch.cat([images.unsqueeze(1), videos], dim=1).view(-1, *videos.shape[2:])
+        else:
+            videos = images
+        reconstructions = reconstructions.contiguous().view(-1, *reconstructions.shape[2:])
         mse_loss = F.mse_loss(videos, reconstructions)
         if step >= self.start_disc:
             d_real = self.discriminator(videos)
