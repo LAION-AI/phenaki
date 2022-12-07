@@ -49,7 +49,7 @@ def train(args):
 
     if is_primary(args):
         print(f"Starting run '{args.run_name}'....")
-        print(f"Batch Size check: {args.n_nodes * args.batch_size * args.accum_grad * len(args.devices)}")
+        print(f"Batch Size check: {args.world_size * args.batch_size * args.accum_grad}")
         print(f"Number of Parameters: {sum([p.numel() for p in model.parameters()])}")
 
     lr = 3e-4
@@ -274,6 +274,7 @@ if __name__ == '__main__':
     args.clip_len = 10
     args.skip_frames = 5
 
+    args.n_nodes = 1
     args.dist_url = "env://"
     args.dist_backend = "nccl"
     args.no_set_device_rank = False
