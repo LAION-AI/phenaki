@@ -160,7 +160,7 @@ def get_dataloader(args):
 
     elif args.dataset == "second_stage":
         dataset = MixImageVideoDataset(args)
-        dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_second_stage)  # TODO: num_workers=args.num_workers
+        dataloader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_second_stage, num_workers=args.num_workers)  # TODO: num_workers=args.num_workers
 
     else:
         dataset = VideoDataset(video_transform=transforms)
