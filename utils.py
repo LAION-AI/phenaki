@@ -1,13 +1,21 @@
-import math
-import torch
+from typing import Union
 import random
-import numpy as np
-import torchvision
+import math
+import os
+
 from torch.utils.data import Dataset, DataLoader, IterableDataset
-import webdataset as wds
 from webdataset.handlers import warn_and_continue
-from maskgit import gumbel_sample
 from einops import rearrange
+import webdataset as wds
+import torchvision
+import numpy as np
+import torch
+import cv2
+
+from maskgit import gumbel_sample
+
+
+SEP = os.path.sep
 
 
 @torch.no_grad()
@@ -140,6 +148,7 @@ def collate_first_stage(batch):
 
 
 def collate_second_stage(batch):
+
     if len(batch[0]) == 2:
         images = torch.stack([i[0] for i in batch], dim=0)
         videos = None
@@ -224,15 +233,16 @@ class MixImageVideoDataset(IterableDataset):
         return video_dataset, image_dataset
 
     def __iter__(self):
-        sources = [iter(self.image_dataset), iter(self.video_dataset)]
-        # sources = [iter(self.video_dataset), iter(self.image_dataset)]
+        # sources = [iter(self.image_dataset), iter(self.video_dataset)]
+        sources = [iter(self.video_dataset), iter(self.image_dataset)]
         # sources = [iter(self.video_dataset)]
         while True:
             for source in sources:
                 for _ in range(self.batch_size):
                     try:
                         yield next(source)
-                    except StopIteration:
+                    except Exception as e:
+                        print(f'\n\nerror:{e}\n\n')
                         return
 
 # video_path = "./videos/test.mp4"
@@ -240,6 +250,117 @@ class MixImageVideoDataset(IterableDataset):
 # video = video.permute(0, 3, 2, 1) / 255.
 # video = transforms(video)
 
+
+## MaskGIT, Paella 모델 학습시 결과물 저장을 위한 함수 (영상 저장용.)
+def video_write(videos: Union[torch.tensor, list], save_path: str):
+
+    ## save_path 인자값을 경로 구분자로 분할 후 폴더 생성.
+    ## e.g.) /home/workspace/dove/sparrow -> /home/workspace/dove
+    #! 경로 구분자로 분할한 리스트의 마지막 요소는 파일이름으로 사용할 예정이라 폴더 생성할 때에는 제외함.
+    path = SEP.join(save_path.split(SEP)[:-1])
+    os.makedirs(path, exist_ok = True)
+    
+    ## 저장할 영상이 여러개 있는 경우 반복문 돌며 저장.
+    for idx, video in enumerate(videos):
+        
+        ## 영상 데이터 전처리 해주는 부분.
+        video  = video.cpu().mul(255).add_(0.5).clamp_(0, 255).numpy()
+        fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
+
+        ## mp4 포맷에 fps 30, 128 x 128 사이즈로 저장.
+        output = cv2.VideoWriter(f'{save_path}_{idx}.mp4', fourcc, 30.0, (128, 128))
+
+        for frame in video:
+            
+            ## 영상 데이터가 가지고 있는 프레임(이미지) 전처리하는 부분.
+            frame = np.transpose(frame, (1, 2, 0))
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            ## 전처리 된 이미지를 영상파일에 추가하는 부분.
+            output.write(frame.astype(np.uint8))
+
+        output.release()
+
+
+## MaskGIT, Paella 모델 학습시 결과물 저장을 위한 함수 (이미지 저장용.)
+def image_write(images: Union[torch.tensor, list], save_path: str):
+    ## save_path 인자값을 경로 구분자로 분할 후 폴더 생성.
+    ## e.g.) /home/workspace/dove/sparrow -> /home/workspace/dove
+    #! 경로 구분자로 분할한 리스트의 마지막 요소는 파일이름으로 사용할 예정이라 폴더 생성할 때에는 제외함.
+    path = SEP.join(save_path.split(SEP)[:-1])
+    os.makedirs(path, exist_ok = True)
+    
+    ## 저장할 이미지 데이터가 여러개인 경우 반복문을 돌며 저장
+    for idx, image in enumerate(images):
+
+        ## 이미지 전처리 하는 부분.
+        image = image.cpu().mul(255).add_(0.5).clamp_(0, 255).squeeze(0).numpy()
+        image = np.transpose(image, (1, 2, 0))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        ## 이미지 저장하는 부분.
+        cv2.imwrite(f'{save_path}_{idx}.jpg', image)
+
+
+def calculate_psnr(img1: np.array, img2: np.array) -> float:
+    # img1 and img2 have range [0, 255]
+
+    img1 *= 255
+    img2 *= 255
+    
+    img1 = img1.astype(np.float64)
+    img2 = img2.astype(np.float64)
+    mse = np.mean((img1 - img2)**2)
+    if mse == 0:
+        return float('inf')
+    return 20 * math.log10(255.0 / math.sqrt(mse))
+
+
+def ssim(img1:np.array, img2:np.array) -> float:
+    img1 *= 255
+    img2 *= 255
+    
+    C1 = (0.01 * 255)**2
+    C2 = (0.03 * 255)**2
+
+    img1 = img1.astype(np.float64)
+    img2 = img2.astype(np.float64)
+    kernel = cv2.getGaussianKernel(11, 1.5)
+    window = np.outer(kernel, kernel.transpose())
+
+    mu1 = cv2.filter2D(img1, -1, window)[5:-5, 5:-5]  # valid
+    mu2 = cv2.filter2D(img2, -1, window)[5:-5, 5:-5]
+    mu1_sq = mu1**2
+    mu2_sq = mu2**2
+    mu1_mu2 = mu1 * mu2
+    sigma1_sq = cv2.filter2D(img1**2, -1, window)[5:-5, 5:-5] - mu1_sq
+    sigma2_sq = cv2.filter2D(img2**2, -1, window)[5:-5, 5:-5] - mu2_sq
+    sigma12 = cv2.filter2D(img1 * img2, -1, window)[5:-5, 5:-5] - mu1_mu2
+
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) *
+                                                            (sigma1_sq + sigma2_sq + C2))
+    return ssim_map.mean()
+
+
+def calculate_ssim(img1 : np.array, img2 : np.array) -> Union[float, None]:
+    '''calculate SSIM
+    the same outputs as MATLAB's
+    img1, img2: [0, 255]
+    '''
+    if not img1.shape == img2.shape:
+        raise ValueError('Input images must have the same dimensions.')
+    if img1.ndim == 2:
+        return ssim(img1, img2)
+    elif img1.ndim == 3:
+        if img1.shape[2] == 3:
+            ssims = []
+            for _ in range(3):
+                ssims.append(ssim(img1, img2))
+            return np.array(ssims).mean()
+        elif img1.shape[2] == 1:
+            return ssim(np.squeeze(img1), np.squeeze(img2))
+    else:
+        raise ValueError('Wrong input image dimensions.')
 
 if __name__ == '__main__':
     import argparse

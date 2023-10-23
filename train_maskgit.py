@@ -1,19 +1,21 @@
-import os
 import time
-import numpy as np
-import torch
-import wandb
+import os
+
+from distributed import init_distributed_device, is_primary
+from torch.nn.parallel import DistributedDataParallel
+# from transformers import T5Tokenizer, T5Model
+from open_clip import tokenizer
 from torch import optim
 from tqdm import tqdm
-from torch.nn.parallel import DistributedDataParallel
-from vivq import VIVQ, BASE_SHAPE
-from maskgit import MaskGit
-from paella import DenoiseUNet
-from utils import get_dataloader, sample_paella, sample_maskgit
-from distributed import init_distributed_device, is_primary
-# from transformers import T5Tokenizer, T5Model
+import numpy as np
 import open_clip
-from open_clip import tokenizer
+import torch
+
+from utils import get_dataloader, sample_paella, sample_maskgit
+from utils import image_write, video_write
+from vivq import VIVQ, BASE_SHAPE
+from paella import DenoiseUNet
+from maskgit import MaskGit
 
 
 def train(args):
@@ -28,7 +30,7 @@ def train(args):
 
     device = init_distributed_device(args)
 
-    vqmodel = VIVQ(codebook_size=args.num_tokens).to(device)
+    vqmodel = VIVQ(codebook_size=args.num_tokens, model = 'maskgit').to(device)
     vqmodel.load_state_dict(torch.load(args.vq_path, map_location=device))
     vqmodel.vqmodule.q_step_counter += int(1e9)
     vqmodel.eval().requires_grad_(False)
@@ -52,7 +54,7 @@ def train(args):
         print(f"Batch Size check: {args.world_size * args.batch_size * args.accum_grad}")
         print(f"Number of Parameters: {sum([p.numel() for p in model.parameters()])}")
 
-    lr = 3e-4
+    lr = 5e-3
     dataset = get_dataloader(args)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
     grad_scaler = torch.cuda.amp.GradScaler()
@@ -64,10 +66,9 @@ def train(args):
 
     if resume:
         logs = torch.load(f"results/{args.run_name}/log.pt")
-        run_id = logs["wandb_run_id"]
         start_step = logs["step"] + 1
-        losses = logs["losses"]
-        accuracies = logs["accuracies"]
+        losses, curr_losses         = logs["losses"]    , logs['curr_losses']
+        accuracies, curr_accuracies = logs["accuracies"], logs['curr_accuracies']
         total_loss, total_acc = losses[-1] * start_step, accuracies[-1] * start_step
         model.load_state_dict(torch.load(f"models/{args.run_name}/model.pt", map_location=device))
         opt_state = torch.load(f"models/{args.run_name}/optim.pt", map_location=device)
@@ -82,16 +83,16 @@ def train(args):
         optimizer.load_state_dict(opt_state)
         del opt_state
     else:
-        run_id = wandb.util.generate_id()
-        losses = []
-        accuracies = []
+        # run_id = wandb.util.generate_id()
+        losses    , curr_losses     = [], []
+        accuracies, curr_accuracies = [], []
         start_step, total_loss, total_acc = 0, 0, 0
 
     if is_primary(args):
-        wandb.init(project="DenoiseGIT", name=args.run_name, entity="wand-tech", config=vars(args), id=run_id, resume="allow")
+        # wandb.init(project="DenoiseGIT", name=args.run_name, entity="wand-tech", config=vars(args), id=run_id, resume="allow")
         os.makedirs(f"results/{args.run_name}", exist_ok=True)
         os.makedirs(f"models/{args.run_name}", exist_ok=True)
-        wandb.watch(model)
+        # wandb.watch(model)
 
     if args.distributed:
         model = DistributedDataParallel(model, device_ids=[device], output_device=device)
@@ -104,8 +105,7 @@ def train(args):
         pbar = enumerate(dataset, start=start_step)
     # pbar = tqdm(range(1000000))
     for step, (images, videos, captions) in pbar:
-    # for step in pbar:
-    #     images = torch.randn(1, 3, 128, 128)
+
         # videos = None
         # videos = torch.randn(1, 10, 3, 128, 128)
         images = images.to(device)
@@ -113,9 +113,11 @@ def train(args):
             videos = videos.to(device)
 
         with torch.no_grad():
+            
             video_indices = vqmodel.encode(images, videos)[2]  # TODO: make this cleaner
             r = torch.rand(images.size(0), device=device)
-            noised_indices, mask = model.module.add_noise(video_indices, r)  # add module back
+
+            noised_indices, mask = model.add_noise(video_indices, r)  # add module back
 
             if np.random.rand() < 0.1:  # 10% of the times...
                 # text_embeddings = images.new_zeros(images.size(0), 1, args.dim_context)
@@ -133,7 +135,8 @@ def train(args):
 
         with torch.cuda.amp.autocast():
             pred = model(noised_indices, text_embeddings, r)
-            loss, acc = model.module.loss(pred, video_indices)
+
+            loss, acc = model.loss(pred, video_indices)
             loss_adjusted = loss / grad_accum_steps
 
         total_loss += loss.item()
@@ -162,17 +165,20 @@ def train(args):
                 'gn': grad_norm
             }
             pbar.set_postfix(log)
-            wandb.log(log)
+            # wandb.log(log)
 
         if is_primary(args) and step % args.log_period == 0:
             losses.append(total_loss / (step + 1))
             accuracies.append(total_acc / (step + 1))
 
+            curr_losses.append(loss.item())
+            curr_accuracies.append(acc.item())
+
             model.eval()
             with torch.no_grad():
                 captions = captions[:6]
                 text_embeddings = text_embeddings[:6]
-                sampled = sample_paella(model.module, text_embeddings)
+                sampled = sample_paella(model, text_embeddings)
                 sampled = vqmodel.decode_indices(sampled)
 
                 # text_tokens = t5_tokenizer(cool_captions_text, return_tensors="pt", padding=True, truncation=True).input_ids
@@ -180,6 +186,7 @@ def train(args):
                 # cool_captions_embeddings = t5_model.encoder(input_ids=text_tokens).last_hidden_state
 
                 cool_captions_text = open("cool_captions.txt").read().splitlines()
+
                 text_tokens = tokenizer.tokenize(cool_captions_text).to(device)
                 cool_captions_embeddings = clip_model.encode_text(text_tokens).float()
 
@@ -187,7 +194,9 @@ def train(args):
                 st = time.time()
                 for caption_embedding in cool_captions_embeddings.chunk(10):
                     caption_embedding = caption_embedding[0].float().to(device)
-                    sampled_text = sample_paella(model.module, caption_embedding)
+                    caption_embedding = caption_embedding.unsqueeze(0)
+                    
+                    sampled_text = sample_paella(model, caption_embedding)
                     sampled_text = vqmodel.decode_indices(sampled_text)
                     for s in sampled_text:
                         cool_captions_sampled.append(s.cpu())
@@ -197,47 +206,41 @@ def train(args):
 
             images = images[:6]
             video_indices = video_indices[:6]
+
+            step_ = str(step).zfill(7)
             if videos is not None:
                 videos = videos[:6]
                 videos = torch.cat([images.unsqueeze(1), videos], dim=1)
                 recon_video = vqmodel.decode_indices(video_indices, BASE_SHAPE)
 
-                log_data = [
-                    [captions[i]] +
-                    [wandb.Video(sampled[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())] +
-                    [wandb.Video(videos[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())] +
-                    [wandb.Video(recon_video[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())]
-                    for i in range(len(captions))
-                ]
+                video_write(sampled    ,  f'results/{args.run_name}/sampled/sampled_{step_}')
+                video_write(videos     ,   f'results/{args.run_name}/videos/videos_{step_}')
+                video_write(recon_video,    f'results/{args.run_name}/recon/recon_{step_}')
+                    
             else:
                 videos = images.unsqueeze(1)
                 recon_video = vqmodel.decode_indices(video_indices, (1, 16, 16))
-                log_data = [
-                    [captions[i]] +
-                    [wandb.Video(sampled[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())] +
-                    [wandb.Image(videos[i])] +
-                    [wandb.Image(recon_video[i])]
-                    for i in range(len(captions))
-                ]
 
-            log_table = wandb.Table(data=log_data, columns=["Caption", "Video", "Orig", "Recon"])
-            wandb.log({"Log": log_table})
+                video_write(sampled    , f'results/{args.run_name}/sampled_{step_}')
+                image_write(videos     ,  f'results/{args.run_name}/videos_{step_}')
+                image_write(recon_video,   f'results/{args.run_name}/recon_{step_}')
 
-            log_data_cool = [[cool_captions_text[i]] + [wandb.Video(cool_captions_sampled[i].cpu().mul(255).add_(0.5).clamp_(0, 255).numpy())] for i in range(len(cool_captions_text))]
-            log_table_cool = wandb.Table(data=log_data_cool, columns=["Caption", "Video"])
-            wandb.log({"Log Cool": log_table_cool})
+            video_write(cool_captions_sampled, f'results/{args.run_name}/cool_sampled/{step_}')
 
-            del videos, video_indices, images, r, text_embeddings, sampled, log_data, sampled_text, log_data_cool
+            del videos, video_indices, images, r, text_embeddings, sampled, sampled_text
             del noised_indices, mask, pred, loss, loss_adjusted, acc
 
             if step % args.extra_ckpt == 0:
-                torch.save(model.module.state_dict(), f"models/{args.run_name}/model_{step}.pt")
+                torch.save(model.state_dict(), f"models/{args.run_name}/model.pt")
+                torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
+                torch.save(grad_scaler.state_dict(), f"models/{args.run_name}/scaler.pt")
+                
+                torch.save(model.state_dict(), f"models/{args.run_name}/model_{step}.pt")
                 torch.save(optimizer.state_dict(), f"models/{args.run_name}/model_{step}_optim.pt")
                 torch.save(grad_scaler.state_dict(), f"models/{args.run_name}/model_{step}_scaler.pt")
-            torch.save(model.module.state_dict(), f"models/{args.run_name}/model.pt")
-            torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
-            torch.save(grad_scaler.state_dict(), f"models/{args.run_name}/scaler.pt")
-            torch.save({'step': step, 'losses': losses, 'accuracies': accuracies, 'wandb_run_id': run_id}, f"results/{args.run_name}/log.pt")
+            torch.save({'step': step, 'curr_losses' : curr_losses, 'losses': losses, 
+                         'curr_accuracies' : curr_accuracies,'accuracies': accuracies}, 
+                       f"results/{args.run_name}/log.pt")
 
 
 if __name__ == '__main__':
@@ -248,11 +251,7 @@ if __name__ == '__main__':
     args.model = "paella"
     args.dataset = "second_stage"
     args.urls = {
-        # "videos": "file:C:/Users/d6582/Documents/ml/phenaki/data/webvid/tar_files/0.tar",
-        # "videos": "/fsx/mas/phenaki/data/webvid/tar_files/{0..249}.tar",
         "videos": "/fsx/phenaki/data/videos/tar_files/{0..1243}.tar",
-        # "images": "file:C:/Users/d6582/Documents/ml/paella/evaluations/laion-30k/000069.tar"
-        # "images": "pipe:aws s3 cp s3://s-laion/improved-aesthetics-laion-2B-en-subsets/aesthetics_tars/{000000..060207}.tar -"
         "images": "/fsx/phenaki/coyo-700m/coyo-data-2/{00000..20892}.tar"
     }
     args.total_steps = 300_000
@@ -262,8 +261,7 @@ if __name__ == '__main__':
     args.extra_ckpt = 10_000
     args.accum_grad = 2
 
-    args.vq_path = "/fsx/phenaki/src/models/model_120000.pt"  # ./models/server/vivq_8192_5_skipframes/model_100000.pt
-    # args.vq_path = "./models/server/vivq_8192_5_skipframes/model_100000.pt"
+    args.vq_path = "/fsx/phenaki/src/models/model_120000.pt"
     args.dim = 1224  # 1224
     args.num_tokens = 8192
     args.max_seq_len = 6 * 16 * 16
@@ -281,17 +279,3 @@ if __name__ == '__main__':
 
     print("Launching with args: ", args)
     train(args)
-
-    # device = "cuda"
-    # model = MaskGit(dim=args.dim, num_tokens=args.num_tokens, max_seq_len=args.max_seq_len, depth=args.depth,
-    #                 dim_context=args.dim_context).to(device)
-    # t5_tokenizer = T5Tokenizer.from_pretrained("t5-small")  # change with "t5-b3" for the 10GB model LoL
-    # t5_model = T5Model.from_pretrained("t5-small").to(device).requires_grad_(False)
-    # caption = "the weather is so beautiful today"
-    # text_tokens = t5_tokenizer(caption, return_tensors="pt", padding=True, truncation=True).input_ids
-    # text_tokens = text_tokens.to(device)
-    # text_embeddings = t5_model.encoder(input_ids=text_tokens).last_hidden_state
-    # print(text_embeddings.shape)
-    # text_embeddings = torch.randn(1, 10, 512).to(device)
-    #
-    # print(sample(model, text_embeddings).shape)
