@@ -53,7 +53,7 @@ def train(proc_id, args):
     lr = 3e-4
     dataset = get_dataloader(args)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
-    optimizer_discriminator = optim.AdamW(criterion.discriminator.parameters(), lr=lr*1e-2)
+    optimizer_discriminator = optim.AdamW(criterion.discriminator.parameters(), lr=lr*1e-1)
 
     if parallel:
         model = DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
@@ -140,7 +140,7 @@ def train(proc_id, args):
             vutils.save_image(comp, f"results/{args.run_name}/{step}.jpg")
 
             if step % args.extra_ckpt == 0:
-                torch.save(model.module.state_dict(), f"models/{args.run_name}/model_{step}.pt")
+                torch.save(model.state_dict(), f"models/{args.run_name}/model_{step}.pt")
                 torch.save(optimizer.state_dict(), f"models/{args.run_name}/model_{step}_optim.pt")
             torch.save(model.state_dict(), f"models/{args.run_name}/model.pt")
             torch.save(optimizer.state_dict(), f"models/{args.run_name}/optim.pt")
@@ -165,7 +165,7 @@ if __name__ == '__main__':
     args.model = "vivq"
     args.dataset = "first_stage"
     # args.dataset_path = "file:./data/6.tar"
-    args.dataset_path = "/fsx/mas/phenaki/data/raw_data/Moments_in_Time_Raw/tar_files/{0..363}.tar"
+    args.dataset_path = "/config/workspace/projects/DataSets/Moments_in_Time_Raw/training"
     args.total_steps = 5_000_000
     args.batch_size = 10
     args.num_workers = 10
@@ -178,9 +178,9 @@ if __name__ == '__main__':
     args.skip_frames = 5
 
     args.n_nodes = 1
-    args.node_id = int(os.environ["SLURM_PROCID"])
-    # args.node_id = 0
-    args.devices = [0, 1, 2, 3, 4, 5, 6, 7]
+    # args.node_id = int(os.environ["SLURM_PROCID"])
+    args.node_id = 0
+    args.devices = [1]
     # args.devices = [0]
 
     print("Launching with args: ", args)
