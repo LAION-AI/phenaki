@@ -188,6 +188,8 @@ class VQModule(nn.Module):
                 #         self.vquantizer.codebook.weight.data = kmeans.centroids.detach()
             qe, (_, commit_loss), indices = self.vquantizer(x, dim=dim)
         else:
+            self.q_step_counter = torch.tensor(1001).to(torch.device('cuda'))
+            
             if self.q_step_counter < self.q_init:
                 qe, commit_loss, indices = x, x.new_tensor(0), None
             else:
@@ -197,8 +199,9 @@ class VQModule(nn.Module):
 
 
 class VIVQ(nn.Module):
-    def __init__(self, base_channels=3, c_hidden=512, c_codebook=16, codebook_size=1024):
+    def __init__(self, model = 'vivq', base_channels=3, c_hidden=512, c_codebook=16, codebook_size=1024):
         super().__init__()
+        self.model   = model
         self.encoder = Encoder(base_channels, c_hidden=c_hidden)
         self.cod_mapper = nn.Sequential(
             nn.Conv3d(c_hidden, c_codebook, kernel_size=1),
@@ -215,16 +218,34 @@ class VIVQ(nn.Module):
         )
 
     def encode(self, image, video):
+
         x = self.encoder(image, video)  # B x T x (H x W) x C
+        
         x = self.cod_mapper(x)
         shape = x.shape
+        
         x = x.view(*x.shape[:3], x.shape[3]*x.shape[4]).permute(0, 2, 3, 1)
         qe, commit_loss, indices = self.vqmodule(x, dim=-1)
-        # indices = indices.view(image.shape[0], -1)
-        if video is not None:
-            indices = indices.view(image.shape[0], *BASE_SHAPE)
+
+        if self.training:
+        
+            if video is not None:
+                indices = indices.view(image.shape[0], *BASE_SHAPE)
+            else:
+                indices = indices.view(image.shape[0], *BASE_SHAPE[1:]).unsqueeze(1)
+
         else:
-            indices = indices.view(image.shape[0], *BASE_SHAPE[1:]).unsqueeze(1)
+
+            
+            if self.model == 'vivq':
+                indices = indices.view(image.shape[0], -1)
+
+            else:
+                if video is not None:
+                    indices = indices.view(image.shape[0], *BASE_SHAPE)
+                else:
+                    indices = indices.view(image.shape[0], *BASE_SHAPE[1:]).unsqueeze(1)
+            
         return (x, qe), commit_loss, indices, shape
 
     def decode(self, x, shape=None):
@@ -240,11 +261,9 @@ class VIVQ(nn.Module):
         return self.decode(self.vqmodule.vquantizer.idx2vq(x, dim=-1).permute(0, 4, 1, 2, 3))
 
     def forward(self, image, video=None):
-        # print(image.shape, video.shape)
         (_, qe), commit_loss, _, shape = self.encode(image, video)
-        # print(qe.shape)
         decoded = self.decode(qe, shape)
-        # print(decoded.shape)
+        
         return decoded, commit_loss
 
 
@@ -256,7 +275,6 @@ if __name__ == '__main__':
     # e = Encoder(c_in=3).to(device)
     # d = Decoder(c_out=3).to(device)
     vq = VIVQ(c_hidden=512).to(device)
-    print(sum([p.numel() for p in vq.parameters()]))
     # rb = ResBlockvq(3, 100).to(device)
     # print(rb(x).shape)
     # r = e(image, video)
